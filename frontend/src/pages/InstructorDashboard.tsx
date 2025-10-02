@@ -1,0 +1,988 @@
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import apiClient, { API_BASE_URL } from '../api/axios';
+
+type StoredUser = {
+  id: number;
+  name: string;
+  email: string;
+  role: 'student' | 'instructor';
+};
+
+type OptionForm = {
+  id: string;
+  optionText: string;
+  isCorrect: boolean;
+};
+
+type QuestionForm = {
+  id: string;
+  questionText: string;
+  points: number;
+  options: OptionForm[];
+};
+
+type QuizSummary = {
+  id: number;
+  title: string;
+  description: string | null;
+  startTime: string | null;
+  endTime: string | null;
+  durationMinutes: number;
+  createdAt: string;
+  questionCount: number;
+  attemptCount: number;
+  averageScore: number;
+};
+
+const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const createEmptyOption = (isCorrect = false): OptionForm => ({
+  id: createId(),
+  optionText: '',
+  isCorrect,
+});
+
+const createEmptyQuestion = (): QuestionForm => ({
+  id: createId(),
+  questionText: '',
+  points: 1,
+  options: [createEmptyOption(true), createEmptyOption(false)],
+});
+
+const InstructorDashboard = () => {
+  const navigate = useNavigate();
+  const [user, setUser] = useState<StoredUser | null>(null);
+  const [activeTab, setActiveTab] = useState<'create' | 'quizzes' | 'profile'>('create');
+
+  const [quizTitle, setQuizTitle] = useState('');
+  const [quizDescription, setQuizDescription] = useState('');
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const [durationMinutes, setDurationMinutes] = useState('');
+  const [accessPassword, setAccessPassword] = useState('');
+  const [questions, setQuestions] = useState<QuestionForm[]>([createEmptyQuestion()]);
+  const [editingQuizId, setEditingQuizId] = useState<number | null>(null);
+
+  const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [quizzes, setQuizzes] = useState<QuizSummary[]>([]);
+  const [quizzesLoading, setQuizzesLoading] = useState(false);
+  const [quizzesError, setQuizzesError] = useState<string | null>(null);
+  const [viewingQuizId, setViewingQuizId] = useState<number | null>(null);
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [profileFeedback, setProfileFeedback] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+
+  const formattedQuestions = useMemo(() => questions, [questions]);
+
+  useEffect(() => {
+    const stored = localStorage.getItem('guardian_user');
+    if (!stored) {
+      navigate('/signin');
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(stored) as StoredUser;
+      if (parsed.role !== 'instructor') {
+        navigate('/signin');
+        return;
+      }
+
+      setUser(parsed);
+    } catch (err) {
+      console.error('Failed to parse stored user', err);
+      navigate('/signin');
+    }
+  }, [navigate]);
+
+  const fetchQuizzes = useCallback(async (instructorId: number) => {
+    setQuizzesLoading(true);
+    setQuizzesError(null);
+
+    try {
+      const response = await apiClient.get(`/api/quiz?instructorId=${encodeURIComponent(instructorId)}`);
+      setQuizzes(response.data.quizzes ?? []);
+    } catch (err) {
+      console.error(err);
+      setQuizzesError(
+        err instanceof Error ? err.message : 'Unable to load quizzes right now.'
+      );
+    } finally {
+      setQuizzesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchQuizzes(user.id);
+  }, [fetchQuizzes, user]);
+
+  const resetForm = () => {
+    setQuizTitle('');
+    setQuizDescription('');
+    setStartTime('');
+    setEndTime('');
+    setDurationMinutes('');
+    setAccessPassword('');
+    setQuestions([createEmptyQuestion()]);
+  };
+
+  const handleAddQuestion = () => {
+    setQuestions((prev) => [...prev, createEmptyQuestion()]);
+  };
+
+  const handleRemoveQuestion = (id: string) => {
+    setQuestions((prev) => (prev.length === 1 ? prev : prev.filter((q) => q.id !== id)));
+  };
+
+  const updateQuestion = (id: string, partial: Partial<QuestionForm>) => {
+    setQuestions((prev) =>
+      prev.map((question) => (question.id === id ? { ...question, ...partial } : question))
+    );
+  };
+
+  const handleQuestionTextChange = (id: string, value: string) => {
+    updateQuestion(id, { questionText: value });
+  };
+
+  const handlePointsChange = (id: string, value: number) => {
+    updateQuestion(id, { points: Number.isNaN(value) ? 1 : Math.max(1, value) });
+  };
+
+  const handleAddOption = (questionId: string) => {
+    setQuestions((prev) =>
+      prev.map((question) => {
+        if (question.id !== questionId) return question;
+        if (question.options.length >= 6) return question;
+        return {
+          ...question,
+          options: [...question.options, createEmptyOption(false)],
+        };
+      })
+    );
+  };
+
+  const handleRemoveOption = (questionId: string, optionId: string) => {
+    setQuestions((prev) =>
+      prev.map((question) => {
+        if (question.id !== questionId) return question;
+        if (question.options.length <= 2) return question;
+        return {
+          ...question,
+          options: question.options.filter((option) => option.id !== optionId),
+        };
+      })
+    );
+  };
+
+  const handleOptionChange = (
+    questionId: string,
+    optionId: string,
+    partial: Partial<OptionForm>
+  ) => {
+    setQuestions((prev) =>
+      prev.map((question) => {
+        if (question.id !== questionId) return question;
+
+        const updatedOptions = question.options.map((option) => {
+          if (option.id !== optionId) {
+            return partial.isCorrect ? { ...option, isCorrect: false } : option;
+          }
+
+          return {
+            ...option,
+            ...partial,
+            isCorrect: partial.isCorrect ? true : option.isCorrect,
+          };
+        });
+
+        return {
+          ...question,
+          options: updatedOptions,
+        };
+      })
+    );
+  };
+
+  const validateForm = () => {
+    if (!quizTitle.trim()) {
+      return 'Quiz name is required.';
+    }
+
+    if (!accessPassword.trim()) {
+      return 'Password is required to restrict quiz access.';
+    }
+
+    if (!durationMinutes || Number.isNaN(Number(durationMinutes)) || Number(durationMinutes) <= 0) {
+      return 'Duration must be a positive number of minutes.';
+    }
+
+    if (formattedQuestions.length === 0) {
+      return 'Add at least one question.';
+    }
+
+    for (const [index, question] of formattedQuestions.entries()) {
+      if (!question.questionText.trim()) {
+        return `Question ${index + 1} requires text.`;
+      }
+
+      if (question.options.length < 2) {
+        return `Question ${index + 1} needs at least two options.`;
+      }
+
+      if (!question.options.some((option) => option.isCorrect)) {
+        return `Question ${index + 1} needs one correct option.`;
+      }
+
+      if (question.points <= 0) {
+        return `Question ${index + 1} needs points greater than 0.`;
+      }
+
+      for (const [optIndex, option] of question.options.entries()) {
+        if (!option.optionText.trim()) {
+          return `Question ${index + 1}, option ${optIndex + 1} needs text.`;
+        }
+      }
+    }
+
+    if (startTime && endTime) {
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return 'Provide valid start and end times.';
+      }
+      if (start >= end) {
+        return 'Start time must be before end time.';
+      }
+    }
+
+    return null;
+  };
+
+  const handleCreateQuiz = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setFeedback(null);
+    setError(null);
+
+    if (!user) {
+      setError('You need to sign in again.');
+      return;
+    }
+
+    const validationIssue = validateForm();
+    if (validationIssue) {
+      setError(validationIssue);
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      const payload = {
+        title: quizTitle.trim(),
+        description: quizDescription.trim() || null,
+        startTime: startTime ? new Date(startTime).toISOString() : null,
+        endTime: endTime ? new Date(endTime).toISOString() : null,
+        durationMinutes: Number(durationMinutes),
+        accessPassword: accessPassword.trim(),
+        createdBy: user.id,
+        questions: formattedQuestions.map((question) => ({
+          questionText: question.questionText.trim(),
+          points: question.points,
+          options: question.options.map((option) => ({
+            optionText: option.optionText.trim(),
+            isCorrect: option.isCorrect,
+          })),
+        })),
+      };
+
+      await apiClient.post('/api/quiz', payload);
+
+      setFeedback('Quiz created successfully.');
+      resetForm();
+      fetchQuizzes(user.id);
+    } catch (err) {
+      console.error(err);
+      const errorMessage = (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Unable to create quiz right now.';
+      setError(errorMessage);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleExport = (quizId: number, format: 'csv' | 'pdf') => {
+    window.open(`${API_BASE_URL}/api/quiz/${quizId}/export?format=${format}`, '_blank');
+  };
+
+  const handleViewQuiz = async (quizId: number) => {
+    setViewingQuizId(quizId);
+    setActiveTab('quizzes');
+    try {
+      const response = await apiClient.get(`/api/quiz/${quizId}`);
+      const quiz = response.data.quiz;
+      
+      setEditingQuizId(quizId);
+      setQuizTitle(quiz.title);
+      setQuizDescription(quiz.description || '');
+      setStartTime(quiz.startTime ? new Date(quiz.startTime).toISOString().slice(0, 16) : '');
+      setEndTime(quiz.endTime ? new Date(quiz.endTime).toISOString().slice(0, 16) : '');
+      setDurationMinutes(quiz.durationMinutes.toString());
+      setAccessPassword(quiz.accessPassword);
+      
+      const loadedQuestions = quiz.questions.map((q: { questionText: string; points: number; options: Array<{ optionText: string; isCorrect: boolean }> }) => ({
+        id: createId(),
+        questionText: q.questionText,
+        points: q.points,
+        options: q.options.map((opt: { optionText: string; isCorrect: boolean }) => ({
+          id: createId(),
+          optionText: opt.optionText,
+          isCorrect: opt.isCorrect,
+        })),
+      }));
+      
+      setQuestions(loadedQuestions);
+      setActiveTab('create');
+    } catch (err) {
+      console.error('Failed to load quiz', err);
+      setError('Failed to load quiz for editing.');
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingQuizId(null);
+    setViewingQuizId(null);
+    resetForm();
+  };
+
+  const handleUpdateQuiz = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setFeedback(null);
+    setError(null);
+
+    if (!user || !editingQuizId) return;
+
+    const validationIssue = validateForm();
+    if (validationIssue) {
+      setError(validationIssue);
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      const payload = {
+        title: quizTitle.trim(),
+        description: quizDescription.trim() || null,
+        startTime: startTime ? new Date(startTime).toISOString() : null,
+        endTime: endTime ? new Date(endTime).toISOString() : null,
+        durationMinutes: Number(durationMinutes),
+        accessPassword: accessPassword.trim(),
+        questions: formattedQuestions.map((question) => ({
+          questionText: question.questionText.trim(),
+          points: question.points,
+          options: question.options.map((option) => ({
+            optionText: option.optionText.trim(),
+            isCorrect: option.isCorrect,
+          })),
+        })),
+      };
+
+      await apiClient.put(`/api/quiz/${editingQuizId}`, payload);
+
+      setFeedback('Quiz updated successfully.');
+      setEditingQuizId(null);
+      resetForm();
+      fetchQuizzes(user.id);
+    } catch (err) {
+      console.error(err);
+      const errorMessage = (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Unable to update quiz right now.';
+      setError(errorMessage);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handlePasswordChange = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setProfileFeedback(null);
+    setProfileError(null);
+
+    if (!user) return;
+
+    if (newPassword !== confirmPassword) {
+      setProfileError('New passwords do not match.');
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      setProfileError('Password must be at least 6 characters.');
+      return;
+    }
+
+    setProfileLoading(true);
+
+    try {
+      await apiClient.put('/api/auth/change-password', {
+        userId: user.id,
+        currentPassword,
+        newPassword,
+      });
+
+      setProfileFeedback('Password changed successfully.');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err) {
+      console.error(err);
+      const errorMessage = (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Unable to change password right now.';
+      setProfileError(errorMessage);
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const formatDateTime = (value: string | null) => {
+    if (!value) return 'N/A';
+    try {
+      return new Date(value).toLocaleString();
+    } catch (error) {
+      console.error('Failed to format datetime', error);
+      return value;
+    }
+  };
+
+  const handleSignOut = () => {
+    localStorage.removeItem('guardian_user');
+    navigate('/signin');
+  };
+
+  if (!user) {
+    return null;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100 pb-16">
+      <header className="bg-white shadow-sm">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-6">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-900">Instructor Dashboard</h1>
+            <p className="text-sm text-slate-500">Welcome back, {user.name}</p>
+          </div>
+          <button
+            onClick={handleSignOut}
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      <nav className="bg-white border-b border-slate-200">
+        <div className="mx-auto max-w-7xl px-6">
+          <div className="flex space-x-8">
+            <button
+              onClick={() => {
+                setActiveTab('create');
+                if (!editingQuizId) resetForm();
+              }}
+              className={`px-4 py-4 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'create'
+                  ? 'border-indigo-500 text-indigo-600'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {editingQuizId ? 'Edit Quiz' : 'Create Quiz'}
+            </button>
+            <button
+              onClick={() => setActiveTab('quizzes')}
+              className={`px-4 py-4 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'quizzes'
+                  ? 'border-indigo-500 text-indigo-600'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              My Quizzes
+            </button>
+            <button
+              onClick={() => setActiveTab('profile')}
+              className={`px-4 py-4 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'profile'
+                  ? 'border-indigo-500 text-indigo-600'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Profile
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      <main className="mx-auto mt-10 max-w-7xl px-6 space-y-12">
+        {activeTab === 'create' && (
+        <section>
+          <div className="rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200">
+            <div className="mb-6 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-semibold text-slate-900">
+                  {editingQuizId ? 'Edit Quiz' : 'Create New Quiz'}
+                </h2>
+                <p className="text-sm text-slate-500">
+                  {editingQuizId 
+                    ? 'Update quiz details and questions.' 
+                    : 'Set quiz basics, add questions, and publish when ready.'}
+                </p>
+              </div>
+              {editingQuizId && (
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            {error && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {error}
+              </div>
+            )}
+
+            {feedback && (
+              <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                {feedback}
+              </div>
+            )}
+
+            <form className="space-y-6" onSubmit={editingQuizId ? handleUpdateQuiz : handleCreateQuiz}>
+              <div className="grid gap-6 md:grid-cols-2">
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">Quiz Name *</span>
+                  <input
+                    type="text"
+                    value={quizTitle}
+                    onChange={(event) => setQuizTitle(event.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="Midterm Assessment"
+                    required
+                  />
+                </label>
+
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">Access Password *</span>
+                  <input
+                    type="text"
+                    value={accessPassword}
+                    onChange={(event) => setAccessPassword(event.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="Enter a secure password"
+                    required
+                  />
+                </label>
+
+                <label className="flex flex-col gap-2 md:col-span-2">
+                  <span className="text-sm font-medium text-slate-700">Description</span>
+                  <textarea
+                    value={quizDescription}
+                    onChange={(event) => setQuizDescription(event.target.value)}
+                    rows={3}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="Optional overview or instructions for learners"
+                  />
+                </label>
+
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">Start Date &amp; Time</span>
+                  <input
+                    type="datetime-local"
+                    value={startTime}
+                    onChange={(event) => setStartTime(event.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                  />
+                </label>
+
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">End Date &amp; Time</span>
+                  <input
+                    type="datetime-local"
+                    value={endTime}
+                    onChange={(event) => setEndTime(event.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                  />
+                </label>
+
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">Duration (minutes) *</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={durationMinutes}
+                    onChange={(event) => setDurationMinutes(event.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="60"
+                    required
+                  />
+                </label>
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-slate-900">Questions</h3>
+                  <button
+                    type="button"
+                    onClick={handleAddQuestion}
+                    className="rounded-lg border border-indigo-500 px-4 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-50"
+                  >
+                    Add question
+                  </button>
+                </div>
+
+                {formattedQuestions.map((question, questionIndex) => (
+                  <div
+                    key={question.id}
+                    className="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm"
+                  >
+                    <div className="mb-4 flex items-center justify-between">
+                      <h4 className="text-base font-semibold text-slate-900">
+                        Question {questionIndex + 1}
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveQuestion(question.id)}
+                        className="text-sm font-medium text-rose-600 hover:text-rose-700"
+                      >
+                        Remove
+                      </button>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_160px]">
+                      <label className="flex flex-col gap-2">
+                        <span className="text-sm font-medium text-slate-700">Question Text *</span>
+                        <textarea
+                          value={question.questionText}
+                          onChange={(event) =>
+                            handleQuestionTextChange(question.id, event.target.value)
+                          }
+                          rows={3}
+                          className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                          placeholder="Enter the question prompt"
+                        />
+                      </label>
+
+                      <label className="flex flex-col gap-2">
+                        <span className="text-sm font-medium text-slate-700">Points *</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={question.points}
+                          onChange={(event) =>
+                            handlePointsChange(question.id, Number(event.target.value))
+                          }
+                          className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-6 space-y-4">
+                      <h5 className="text-sm font-semibold text-slate-700">Options</h5>
+                      <div className="space-y-3">
+                        {question.options.map((option, optionIndex) => (
+                          <div
+                            key={option.id}
+                            className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4 md:flex-row md:items-center"
+                          >
+                            <div className="flex flex-1 flex-col gap-2">
+                              <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                                Option {optionIndex + 1}
+                              </span>
+                              <input
+                                type="text"
+                                value={option.optionText}
+                                onChange={(event) =>
+                                  handleOptionChange(question.id, option.id, {
+                                    optionText: event.target.value,
+                                  })
+                                }
+                                className="rounded-lg border border-slate-300 px-4 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                                placeholder="Answer choice"
+                              />
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                              <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
+                                <input
+                                  type="radio"
+                                  name={`correct-${question.id}`}
+                                  checked={option.isCorrect}
+                                  onChange={() =>
+                                    handleOptionChange(question.id, option.id, {
+                                      isCorrect: true,
+                                    })
+                                  }
+                                  className="h-4 w-4 text-indigo-600 focus:ring-indigo-500"
+                                />
+                                Correct answer
+                              </label>
+
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveOption(question.id, option.id)}
+                                className="text-sm font-medium text-rose-600 hover:text-rose-700"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleAddOption(question.id)}
+                        className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                      >
+                        Add option (max 6)
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={editingQuizId ? handleCancelEdit : resetForm}
+                  className="rounded-lg border border-slate-300 px-5 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                  disabled={submitting}
+                >
+                  {editingQuizId ? 'Cancel' : 'Reset'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="rounded-lg bg-indigo-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                >
+                  {submitting ? (editingQuizId ? 'Updating…' : 'Creating…') : (editingQuizId ? 'Update quiz' : 'Create quiz')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </section>
+        )}
+
+        {activeTab === 'quizzes' && (
+
+        <section>
+          <div className="mb-6 flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-semibold text-slate-900">Previous Quizzes</h2>
+              <p className="text-sm text-slate-500">
+                Review past quizzes, monitor performance, and export results.
+              </p>
+            </div>
+          </div>
+
+          {quizzesLoading && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+              Loading quizzes…
+            </div>
+          )}
+
+          {quizzesError && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-700 shadow-sm">
+              {quizzesError}
+            </div>
+          )}
+
+          {!quizzesLoading && !quizzesError && quizzes.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center shadow-sm">
+              <h3 className="text-lg font-semibold text-slate-700">No quizzes yet</h3>
+              <p className="mt-2 text-sm text-slate-500">
+                Create your first quiz to see results and export performance data.
+              </p>
+            </div>
+          )}
+
+          <div className="grid gap-6 md:grid-cols-2">
+            {quizzes.map((quiz) => (
+              <div
+                key={quiz.id}
+                className="flex h-full flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-xl font-semibold text-slate-900">{quiz.title}</h3>
+                      {quiz.description && (
+                        <p className="text-sm text-slate-500">{quiz.description}</p>
+                      )}
+                    </div>
+                    <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-600">
+                      {quiz.durationMinutes} mins
+                    </span>
+                  </div>
+
+                  <dl className="grid grid-cols-2 gap-3 text-sm text-slate-600">
+                    <div>
+                      <dt className="font-medium text-slate-500">Start</dt>
+                      <dd>{formatDateTime(quiz.startTime)}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-slate-500">End</dt>
+                      <dd>{formatDateTime(quiz.endTime)}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-slate-500">Questions</dt>
+                      <dd>{quiz.questionCount}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-slate-500">Attempts</dt>
+                      <dd>{quiz.attemptCount}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-slate-500">Average Score</dt>
+                      <dd>{quiz.averageScore}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-slate-500">Created</dt>
+                      <dd>{formatDateTime(quiz.createdAt)}</dd>
+                    </div>
+                  </dl>
+                </div>
+
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button
+                    onClick={() => handleViewQuiz(quiz.id)}
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    View/Edit
+                  </button>
+                  <button
+                    onClick={() => handleExport(quiz.id, 'csv')}
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    Export CSV
+                  </button>
+                  <button
+                    onClick={() => handleExport(quiz.id, 'pdf')}
+                    className="rounded-lg border border-indigo-500 px-4 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-50"
+                  >
+                    Export PDF
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+        )}
+
+        {activeTab === 'profile' && (
+        <section>
+          <div className="rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200">
+            <div className="mb-6">
+              <h2 className="text-2xl font-semibold text-slate-900">Profile Settings</h2>
+              <p className="text-sm text-slate-500">
+                Update your account information and security settings.
+              </p>
+            </div>
+
+            <div className="mb-8 rounded-xl border border-slate-200 bg-slate-50 p-6">
+              <h3 className="text-lg font-semibold text-slate-900 mb-4">Account Information</h3>
+              <dl className="space-y-3">
+                <div>
+                  <dt className="text-sm font-medium text-slate-500">Name</dt>
+                  <dd className="text-base text-slate-900">{user.name}</dd>
+                </div>
+                <div>
+                  <dt className="text-sm font-medium text-slate-500">Email</dt>
+                  <dd className="text-base text-slate-900">{user.email}</dd>
+                </div>
+                <div>
+                  <dt className="text-sm font-medium text-slate-500">Role</dt>
+                  <dd className="text-base text-slate-900 capitalize">{user.role}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900 mb-4">Change Password</h3>
+              
+              {profileError && (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {profileError}
+                </div>
+              )}
+
+              {profileFeedback && (
+                <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  {profileFeedback}
+                </div>
+              )}
+
+              <form className="space-y-6" onSubmit={handlePasswordChange}>
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">Current Password *</span>
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="Enter current password"
+                    required
+                  />
+                </label>
+
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">New Password *</span>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="Enter new password (min 6 characters)"
+                    required
+                    minLength={6}
+                  />
+                </label>
+
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-slate-700">Confirm New Password *</span>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="Re-enter new password"
+                    required
+                  />
+                </label>
+
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={profileLoading}
+                    className="rounded-lg bg-indigo-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                  >
+                    {profileLoading ? 'Updating…' : 'Update Password'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </section>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default InstructorDashboard;

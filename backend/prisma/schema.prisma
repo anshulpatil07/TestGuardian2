@@ -1,0 +1,142 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Simple enums matching your SQL
+enum UserRole {
+  student
+  instructor
+}
+
+enum AttemptStatus {
+  in_progress
+  submitted
+  auto_submitted
+}
+
+// 1. USERS TABLE
+model User {
+  id        Int      @id @default(autoincrement()) @map("user_id")
+  name      String   @db.VarChar(100)
+  email     String   @unique @db.VarChar(150)
+  password  String   @db.Text // plain for testing, hash later
+  role      UserRole
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  createdQuizzes Quiz[]     @relation("QuizCreator")
+  attempts       Attempt[]
+  warnings       Warning[]
+
+  @@map("users")
+}
+
+// 2. QUIZ TABLE
+model Quiz {
+  id              Int       @id @default(autoincrement()) @map("quiz_id")
+  title           String    @db.VarChar(200)
+  description     String?   @db.Text
+  createdBy       Int       @map("created_by")
+  accessPassword  String    @map("access_password") @db.VarChar(100) // plain for testing, hash later
+  durationMinutes Int       @map("duration_minutes")
+  startTime       DateTime? @map("start_time")
+  endTime         DateTime? @map("end_time")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  creator   User        @relation("QuizCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  questions Question[]
+  attempts  Attempt[]
+
+  @@map("quizzes")
+}
+
+// 3. QUESTIONS TABLE (MCQ only)
+model Question {
+  id           Int      @id @default(autoincrement()) @map("question_id")
+  quizId       Int      @map("quiz_id")
+  questionText String   @map("question_text") @db.Text
+  points       Int      @default(1)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  quiz      Quiz       @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  options   Option[]
+  responses Response[]
+
+  @@map("questions")
+}
+
+// 4. OPTIONS TABLE (answers for each question)
+model Option {
+  id         Int     @id @default(autoincrement()) @map("option_id")
+  questionId Int     @map("question_id")
+  optionText String  @map("option_text") @db.Text
+  isCorrect  Boolean @default(false) @map("is_correct") // only one true per MCQ
+
+  // Relations
+  question  Question   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  responses Response[]
+
+  @@map("options")
+}
+
+// 5. ATTEMPTS TABLE (student attempts quiz)
+model Attempt {
+  id          Int           @id @default(autoincrement()) @map("attempt_id")
+  userId      Int           @map("user_id")
+  quizId      Int           @map("quiz_id")
+  startedAt   DateTime      @default(now()) @map("started_at")
+  submittedAt DateTime?     @map("submitted_at")
+  score       Decimal?      @db.Decimal(5, 2)
+  status      AttemptStatus @default(in_progress)
+
+  // Relations
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quiz      Quiz       @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  responses Response[]
+  warnings  Warning[]
+
+  // Constraints
+  @@unique([userId, quizId]) // restrict to one attempt per student per quiz
+  @@map("attempts")
+}
+
+// 6. RESPONSES TABLE (student's selected option)
+model Response {
+  id               Int       @id @default(autoincrement()) @map("response_id")
+  attemptId        Int       @map("attempt_id")
+  questionId       Int       @map("question_id")
+  selectedOptionId Int?      @map("selected_option_id")
+  answeredAt       DateTime? @default(now()) @map("answered_at")
+
+  // Relations
+  attempt        Attempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question       Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selectedOption Option?  @relation(fields: [selectedOptionId], references: [id])
+
+  @@map("responses")
+}
+
+// 7. WARNINGS TABLE (malpractice tracking - linked to student via attempt)
+model Warning {
+  id          Int      @id @default(autoincrement()) @map("warning_id")
+  attemptId   Int      @map("attempt_id")
+  userId      Int      @map("user_id") // added for clarity
+  warningType String   @map("warning_type") @db.VarChar(50) // e.g. 'tab_switch', 'exit_fullscreen', 'copy_paste'
+  timestamp   DateTime @default(now())
+
+  // Relations
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("warnings")
+}
