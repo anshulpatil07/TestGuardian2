@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
+  // Create instructor user
   await prisma.user.upsert({
     where: { email: 'instructor@example.com' },
     update: {
@@ -14,6 +15,21 @@ async function main() {
       email: 'instructor@example.com',
       password: 'password123',
       role: 'instructor',
+    },
+  });
+
+  // Create student user
+  await prisma.user.upsert({
+    where: { email: 'student@example.com' },
+    update: {
+      name: 'Demo Student',
+      password: 'password123',
+    },
+    create: {
+      name: 'Demo Student',
+      email: 'student@example.com',
+      password: 'password123',
+      role: 'student',
     },
   });
 }

@@ -4,6 +4,292 @@ import prisma from '../db/prisma.js';
 
 const router = express.Router();
 
+// ============================================================
+// STUDENT ROUTES - Get Available Quizzes
+// ============================================================
+router.get('/available', async (req, res) => {
+  try {
+    const now = new Date();
+
+    const quizzes = await prisma.quiz.findMany({
+      where: {
+        OR: [
+          {
+            AND: [
+              { startTime: { lte: now } },
+              { endTime: { gte: now } }
+            ]
+          },
+          {
+            AND: [
+              { startTime: null },
+              { endTime: null }
+            ]
+          },
+          {
+            AND: [
+              { startTime: { lte: now } },
+              { endTime: null }
+            ]
+          },
+          {
+            AND: [
+              { startTime: null },
+              { endTime: { gte: now } }
+            ]
+          }
+        ]
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        startTime: true,
+        endTime: true,
+        durationMinutes: true,
+        _count: {
+          select: { questions: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const formattedQuizzes = quizzes.map((quiz) => ({
+      id: quiz.id,
+      title: quiz.title,
+      description: quiz.description,
+      startTime: quiz.startTime,
+      endTime: quiz.endTime,
+      durationMinutes: quiz.durationMinutes,
+      questionCount: quiz._count.questions
+    }));
+
+    res.json({ quizzes: formattedQuizzes });
+  } catch (error) {
+    console.error('Error fetching available quizzes:', error);
+    res.status(500).json({ message: 'Failed to fetch quizzes' });
+  }
+});
+
+// ============================================================
+// STUDENT ROUTES - Verify Quiz Password
+// ============================================================
+router.post('/verify-password', async (req, res) => {
+  try {
+    const { quizId, password } = req.body;
+
+    if (!quizId || !password) {
+      return res.status(400).json({ message: 'Quiz ID and password are required' });
+    }
+
+    const quiz = await prisma.quiz.findUnique({
+      where: { id: Number(quizId) },
+      select: { accessPassword: true }
+    });
+
+    if (!quiz) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
+
+    const valid = quiz.accessPassword === password;
+    res.json({ valid });
+  } catch (error) {
+    console.error('Error verifying password:', error);
+    res.status(500).json({ message: 'Failed to verify password' });
+  }
+});
+
+// ============================================================
+// STUDENT ROUTES - Submit Quiz Attempt
+// ============================================================
+router.post('/:id/attempt', async (req, res) => {
+  try {
+    const quizId = Number(req.params.id);
+    const { userId, responses } = req.body;
+
+    if (!userId || !responses || !Array.isArray(responses)) {
+      return res.status(400).json({ message: 'User ID and responses array are required' });
+    }
+
+    // Check if user has already attempted this quiz
+    const existingAttempt = await prisma.attempt.findUnique({
+      where: {
+        userId_quizId: {
+          userId: Number(userId),
+          quizId: quizId
+        }
+      }
+    });
+
+    if (existingAttempt) {
+      return res.status(400).json({ 
+        message: 'You have already attempted this quiz. Multiple attempts are not allowed.' 
+      });
+    }
+
+    // Verify quiz exists
+    const quiz = await prisma.quiz.findUnique({
+      where: { id: quizId },
+      include: {
+        questions: {
+          include: {
+            options: true
+          }
+        }
+      }
+    });
+
+    if (!quiz) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
+
+    // Create attempt and responses in a transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Create attempt
+      const attempt = await tx.attempt.create({
+        data: {
+          userId: Number(userId),
+          quizId: quizId,
+          startedAt: new Date(),
+          submittedAt: new Date(),
+          status: 'submitted'
+        }
+      });
+
+      // Calculate score and store responses
+      let totalScore = 0;
+      let maxScore = 0;
+
+      for (const response of responses) {
+        const question = quiz.questions.find((q) => q.id === Number(response.questionId));
+        if (!question) continue;
+
+        maxScore += question.points;
+
+        const selectedOption = question.options.find((opt) => opt.id === Number(response.optionId));
+        const isCorrect = selectedOption?.isCorrect || false;
+
+        if (isCorrect) {
+          totalScore += question.points;
+        }
+
+        await tx.response.create({
+          data: {
+            attemptId: attempt.id,
+            questionId: Number(response.questionId),
+            selectedOptionId: Number(response.optionId)
+          }
+        });
+      }
+
+      // Update attempt with final score
+      const updatedAttempt = await tx.attempt.update({
+        where: { id: attempt.id },
+        data: { 
+          score: totalScore,
+          status: 'submitted'
+        }
+      });
+
+      return {
+        attempt: updatedAttempt,
+        totalScore,
+        maxScore
+      };
+    });
+
+    res.status(201).json({
+      message: 'Quiz submitted successfully',
+      attemptId: result.attempt.id,
+      score: result.totalScore,
+      maxScore: result.maxScore
+    });
+  } catch (error) {
+    console.error('Error submitting quiz attempt:', error);
+    res.status(500).json({ message: 'Failed to submit quiz attempt' });
+  }
+});
+
+// ============================================================
+// STUDENT ROUTES - Get Quiz Questions for Attempt
+// ============================================================
+router.get('/:id/questions', async (req, res) => {
+  try {
+    const quizId = Number(req.params.id);
+
+    const quiz = await prisma.quiz.findUnique({
+      where: { id: quizId },
+      select: {
+        id: true,
+        title: true,
+        durationMinutes: true,
+        questions: {
+          select: {
+            id: true,
+            questionText: true,
+            points: true,
+            options: {
+              select: {
+                id: true,
+                optionText: true
+                // Note: isCorrect is intentionally excluded for student view
+              }
+            }
+          },
+          orderBy: { id: 'asc' }
+        }
+      }
+    });
+
+    if (!quiz) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
+
+    res.json({
+      id: quiz.id,
+      title: quiz.title,
+      durationMinutes: quiz.durationMinutes,
+      questions: quiz.questions
+    });
+  } catch (error) {
+    console.error('Error fetching quiz questions:', error);
+    res.status(500).json({ message: 'Failed to fetch quiz questions' });
+  }
+});
+
+// ============================================================
+// STUDENT ROUTES - Check if student has attempted quiz
+// ============================================================
+router.get('/:id/attempt-status/:userId', async (req, res) => {
+  try {
+    const quizId = Number(req.params.id);
+    const userId = Number(req.params.userId);
+
+    const attempt = await prisma.attempt.findUnique({
+      where: {
+        userId_quizId: {
+          userId: userId,
+          quizId: quizId
+        }
+      },
+      select: {
+        id: true,
+        score: true,
+        submittedAt: true,
+        status: true
+      }
+    });
+
+    res.json({ 
+      hasAttempted: !!attempt,
+      attempt: attempt || null
+    });
+  } catch (error) {
+    console.error('Error checking attempt status:', error);
+    res.status(500).json({ message: 'Failed to check attempt status' });
+  }
+});
+
 const sanitizeDate = (value) => (value ? new Date(value) : null);
 
 const ensureQuestionValidity = (question, index) => {

@@ -42,7 +42,6 @@ const createEmptyOption = (isCorrect = false): OptionForm => ({
   optionText: '',
   isCorrect,
 });
-
 const createEmptyQuestion = (): QuestionForm => ({
   id: createId(),
   questionText: '',
@@ -267,19 +266,18 @@ const InstructorDashboard = () => {
     return null;
   };
 
-  const handleCreateQuiz = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setFeedback(null);
-    setError(null);
-
+  const handleCreateQuiz = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault(); // Prevent form submission refresh
+    
     if (!user) {
-      setError('You need to sign in again.');
+      setError('User not found. Please sign in again.');
       return;
     }
 
-    const validationIssue = validateForm();
-    if (validationIssue) {
-      setError(validationIssue);
+    // Inline validation
+    const validationError = validateForm();
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
