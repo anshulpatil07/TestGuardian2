@@ -8,6 +8,7 @@
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && nodemon server.js",
     "dev:electron": "wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .",
+    "electron-only": "cross-env NODE_ENV=development electron .",
     "build": "cd frontend && npm run build && electron-builder"
   },
   "keywords": [],

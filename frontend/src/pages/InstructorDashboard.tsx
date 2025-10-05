@@ -70,7 +70,6 @@ const InstructorDashboard = () => {
   const [quizzes, setQuizzes] = useState<QuizSummary[]>([]);
   const [quizzesLoading, setQuizzesLoading] = useState(false);
   const [quizzesError, setQuizzesError] = useState<string | null>(null);
-  const [viewingQuizId, setViewingQuizId] = useState<number | null>(null);
 
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -321,7 +320,6 @@ const InstructorDashboard = () => {
   };
 
   const handleViewQuiz = async (quizId: number) => {
-    setViewingQuizId(quizId);
     setActiveTab('quizzes');
     try {
       const response = await apiClient.get(`/api/quiz/${quizId}`);
@@ -356,7 +354,6 @@ const InstructorDashboard = () => {
 
   const handleCancelEdit = () => {
     setEditingQuizId(null);
-    setViewingQuizId(null);
     resetForm();
   };
 

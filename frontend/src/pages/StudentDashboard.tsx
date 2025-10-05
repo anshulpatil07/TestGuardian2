@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import apiClient from '../api/axios';
 import QuizCard from '../Components/QuizCard';
 import QuizPasswordModal from '../Components/QuizPasswordModal';
+import { isElectron, openQuizWindow } from '../utils/electronIPC';
 
 type StoredUser = {
   id: number;
@@ -134,7 +135,15 @@ const StudentDashboard = () => {
 
   const handlePasswordSuccess = (quizId: number) => {
     setShowPasswordModal(false);
-    navigate(`/quiz-attempt/${quizId}`);
+    
+    // Check if running in Electron for lockdown mode
+    if (isElectron()) {
+      // Open quiz in lockdown fullscreen window
+      openQuizWindow(quizId);
+    } else {
+      // Regular browser mode - navigate normally
+      navigate(`/quiz-attempt/${quizId}`);
+    }
   };
 
   const handleSignOut = () => {

@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useState, useRef } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import apiClient from '../api/axios';
+import {
+  isElectron,
+  closeQuizWindow,
+  onQuizWindowBlur,
+  onQuizLeaveFullscreen,
+  onQuizMinimizeAttempt,
+  onQuizCloseAttempt,
+  onAutoSubmitQuiz,
+} from '../utils/electronIPC';
 
 type StoredUser = {
   id: number;
@@ -36,6 +45,8 @@ type SelectedAnswer = {
 const QuizAttempt = () => {
   const navigate = useNavigate();
   const { quizId } = useParams<{ quizId: string }>();
+  const [searchParams] = useSearchParams();
+  const isLockdownMode = searchParams.get('lockdown') === 'true';
 
   const [user, setUser] = useState<StoredUser | null>(null);
   const [quiz, setQuiz] = useState<QuizData | null>(null);
@@ -46,6 +57,116 @@ const QuizAttempt = () => {
   const [selectedAnswers, setSelectedAnswers] = useState<SelectedAnswer[]>([]);
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Lockdown mode states
+  const [warningCount, setWarningCount] = useState(0);
+  const [showWarning, setShowWarning] = useState(false);
+  const [warningMessage, setWarningMessage] = useState('');
+  const [isAutoSubmitting, setIsAutoSubmitting] = useState(false);
+
+  // Submission result state for non-blocking success modal
+  const [submissionResult, setSubmissionResult] = useState<{
+    score: number;
+    maxScore: number;
+    attemptId: string;
+  } | null>(null);
+
+  const MAX_WARNINGS = 3;
+
+  // Ref to store submit handler to avoid circular dependency
+  const submitQuizRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Handle warning trigger
+  const handleWarningTrigger = useCallback((reason: string) => {
+    if (!isLockdownMode || isSubmitting || isAutoSubmitting) return;
+
+    setWarningCount((prevCount) => {
+      const newCount = prevCount + 1;
+      
+      if (newCount >= MAX_WARNINGS) {
+        setWarningMessage(`Final warning! Auto-submitting quiz...`);
+        setShowWarning(true);
+        setIsAutoSubmitting(true);
+        
+        // Auto-submit after showing warning
+        setTimeout(() => {
+          setShowWarning(false); // Hide warning before submit
+          if (submitQuizRef.current) {
+            submitQuizRef.current();
+          }
+        }, 2000);
+      } else {
+        setWarningMessage(
+          `Warning ${newCount}/${MAX_WARNINGS}: ${reason}. After ${MAX_WARNINGS} warnings, your quiz will be auto-submitted.`
+        );
+        setShowWarning(true);
+        
+        // Hide warning after 4 seconds
+        setTimeout(() => setShowWarning(false), 4000);
+      }
+      
+      return newCount;
+    });
+  }, [isLockdownMode, isSubmitting, isAutoSubmitting, MAX_WARNINGS]);
+
+  // Browser event listeners for lockdown mode
+  useEffect(() => {
+    if (!isLockdownMode) return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        handleWarningTrigger('Switching tabs or minimizing browser is not allowed');
+      }
+    };
+
+    const handleWindowBlur = () => {
+      handleWarningTrigger('Switching away from the quiz window is not allowed');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [isLockdownMode, handleWarningTrigger]);
+
+  // Electron IPC event listeners for lockdown mode
+  useEffect(() => {
+    if (!isLockdownMode || !isElectron()) return;
+
+    const cleanupBlur = onQuizWindowBlur(() => {
+      handleWarningTrigger('Switching away from the quiz window is not allowed');
+    });
+
+    const cleanupFullscreen = onQuizLeaveFullscreen(() => {
+      handleWarningTrigger('Exiting fullscreen mode is not allowed');
+    });
+
+    const cleanupMinimize = onQuizMinimizeAttempt(() => {
+      handleWarningTrigger('Minimizing the quiz window is not allowed');
+    });
+
+    const cleanupClose = onQuizCloseAttempt(() => {
+      handleWarningTrigger('Closing the quiz window is not allowed');
+    });
+
+    const cleanupAutoSubmit = onAutoSubmitQuiz(() => {
+      setIsAutoSubmitting(true);
+      if (submitQuizRef.current) {
+        submitQuizRef.current();
+      }
+    });
+
+    return () => {
+      cleanupBlur();
+      cleanupFullscreen();
+      cleanupMinimize();
+      cleanupClose();
+      cleanupAutoSubmit();
+    };
+  }, [isLockdownMode, handleWarningTrigger]);
 
   useEffect(() => {
     const stored = localStorage.getItem('guardian_user');
@@ -103,9 +224,9 @@ const QuizAttempt = () => {
   const handleSubmitQuiz = useCallback(async () => {
     if (!user || !quiz || isSubmitting) return;
 
-    // Check if all questions are answered
+    // Check if all questions are answered (skip confirmation for auto-submit)
     const unanswered = selectedAnswers.filter((ans) => ans.optionId === null);
-    if (unanswered.length > 0 && timeRemaining !== 0) {
+    if (unanswered.length > 0 && timeRemaining !== 0 && !isAutoSubmitting) {
       const confirmed = window.confirm(
         `You have ${unanswered.length} unanswered question(s). Are you sure you want to submit?`
       );
@@ -129,18 +250,42 @@ const QuizAttempt = () => {
 
       const { score, maxScore, attemptId } = response.data;
 
-      alert(
-        `Quiz submitted successfully!\nYour Score: ${score}/${maxScore}\nAttempt ID: ${attemptId}`
-      );
+      // Set submission result to trigger success modal
+      setSubmissionResult({ score, maxScore, attemptId: String(attemptId) });
 
-      navigate('/student-dashboard');
     } catch (err) {
       console.error('Failed to submit quiz', err);
       alert('Failed to submit quiz. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
-  }, [user, quiz, isSubmitting, selectedAnswers, timeRemaining, navigate]);
+  }, [user, quiz, isSubmitting, selectedAnswers, timeRemaining, isAutoSubmitting]);
+
+  // Store the submit handler in ref for use in warning trigger
+  useEffect(() => {
+    submitQuizRef.current = handleSubmitQuiz;
+  }, [handleSubmitQuiz]);
+
+  // Handle window close or navigation after successful submission
+  useEffect(() => {
+    if (!submissionResult) return;
+
+    if (isLockdownMode && isElectron()) {
+      // Wait 4 seconds before closing the Electron window
+      const timer = setTimeout(() => {
+        closeQuizWindow();
+      }, 4000);
+
+      return () => clearTimeout(timer);
+    } else {
+      // If not in lockdown mode, navigate to dashboard after 4 seconds
+      const timer = setTimeout(() => {
+        navigate('/student-dashboard');
+      }, 4000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [submissionResult, isLockdownMode, navigate]);
 
   useEffect(() => {
     if (timeRemaining === null || timeRemaining <= 0) return;
@@ -222,6 +367,112 @@ const QuizAttempt = () => {
 
   return (
     <div className="min-h-screen bg-slate-100 pb-16">
+      {/* Success Modal - Non-blocking */}
+      {submissionResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-75">
+          <div className="rounded-2xl border-2 border-green-500 bg-white p-8 shadow-2xl max-w-md mx-4 text-center">
+            <svg
+              className="h-16 w-16 text-green-500 mx-auto mb-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+              ></path>
+            </svg>
+            <h3 className="text-2xl font-bold text-slate-900 mb-2">
+              Quiz Submitted Successfully!
+            </h3>
+            <p className="text-lg text-slate-600 mb-1">
+              Your Score: <span className="font-bold text-green-600">{submissionResult.score} / {submissionResult.maxScore}</span>
+            </p>
+            <p className="text-sm text-slate-500 mb-6">
+              Attempt ID: {submissionResult.attemptId}
+            </p>
+            <p className="text-slate-600">
+              {isLockdownMode
+                ? 'This window will close automatically in a moment...'
+                : 'Redirecting to dashboard...'}
+            </p>
+            <div className="mt-4 flex items-center justify-center">
+              <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse mr-2"></div>
+              <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse mr-2" style={{ animationDelay: '0.2s' }}></div>
+              <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Auto-Submit Loading Overlay */}
+      {isAutoSubmitting && !showWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
+          <div className="rounded-2xl border-2 border-red-500 bg-red-50 p-8 shadow-2xl max-w-md mx-4">
+            <div className="flex items-center mb-4">
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-red-600 border-t-transparent mr-3"></div>
+              <h3 className="text-xl font-bold text-red-900">
+                Submitting Quiz...
+              </h3>
+            </div>
+            <p className="text-lg text-red-800">
+              Please wait while we submit your quiz.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Lockdown Warning Popup */}
+      {showWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div
+            className={`rounded-2xl border-2 p-8 shadow-2xl max-w-md mx-4 ${
+              warningCount >= MAX_WARNINGS
+                ? 'bg-red-50 border-red-500'
+                : 'bg-yellow-50 border-yellow-500'
+            }`}
+          >
+            <div className="flex items-center mb-4">
+              <svg
+                className={`h-8 w-8 mr-3 ${
+                  warningCount >= MAX_WARNINGS ? 'text-red-600' : 'text-yellow-600'
+                }`}
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <h3
+                className={`text-xl font-bold ${
+                  warningCount >= MAX_WARNINGS ? 'text-red-900' : 'text-yellow-900'
+                }`}
+              >
+                {warningCount >= MAX_WARNINGS ? 'Final Warning!' : `Warning ${warningCount}/${MAX_WARNINGS}`}
+              </h3>
+            </div>
+            <p
+              className={`text-lg ${
+                warningCount >= MAX_WARNINGS ? 'text-red-800' : 'text-yellow-800'
+              }`}
+            >
+              {warningMessage}
+            </p>
+            {warningCount >= MAX_WARNINGS && (
+              <div className="mt-4 flex items-center justify-center">
+                <div className="h-8 w-8 animate-spin rounded-full border-4 border-red-600 border-t-transparent"></div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <header className="bg-white shadow-sm border-b border-slate-200">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
           <div>
