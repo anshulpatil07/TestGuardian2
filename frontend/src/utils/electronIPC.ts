@@ -45,6 +45,14 @@ export const closeQuizWindow = (): void => {
   }
 };
 
+// Allow quiz window to exit after completion
+export const allowQuizExit = (): void => {
+  const ipcRenderer = getIpcRenderer();
+  if (ipcRenderer) {
+    ipcRenderer.send('allow-quiz-exit');
+  }
+};
+
 // Force submit quiz (called after max warnings)
 export const forceSubmitQuiz = (): void => {
   const ipcRenderer = getIpcRenderer();
@@ -95,6 +103,16 @@ export const onAutoSubmitQuiz = (callback: () => void): (() => void) => {
   if (ipcRenderer) {
     ipcRenderer.on('auto-submit-quiz', callback);
     return () => ipcRenderer.removeListener('auto-submit-quiz', callback);
+  }
+  return () => {};
+};
+
+// Listen for detailed violation events
+export const onQuizViolationDetected = (callback: (violation: any) => void): (() => void) => {
+  const ipcRenderer = getIpcRenderer();
+  if (ipcRenderer) {
+    ipcRenderer.on('quiz-violation-detected', (event, violation) => callback(violation));
+    return () => ipcRenderer.removeListener('quiz-violation-detected', callback);
   }
   return () => {};
 };
