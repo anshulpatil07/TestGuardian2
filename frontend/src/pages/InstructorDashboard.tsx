@@ -9,6 +9,8 @@ type StoredUser = {
   role: 'student' | 'instructor';
 };
 
+type QuestionType = 'mcq' | 'descriptive' | 'video' | 'photo';
+
 type OptionForm = {
   id: string;
   optionText: string;
@@ -18,6 +20,8 @@ type OptionForm = {
 type QuestionForm = {
   id: string;
   questionText: string;
+  questionType: QuestionType;
+  mediaUrl?: string;
   points: number;
   options: OptionForm[];
 };
@@ -45,6 +49,7 @@ const createEmptyOption = (isCorrect = false): OptionForm => ({
 const createEmptyQuestion = (): QuestionForm => ({
   id: createId(),
   questionText: '',
+  questionType: 'mcq',
   points: 1,
   options: [createEmptyOption(true), createEmptyOption(false)],
 });
@@ -77,6 +82,8 @@ const InstructorDashboard = () => {
   const [profileFeedback, setProfileFeedback] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [csvImportError, setCsvImportError] = useState<string | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState<string | null>(null);
 
   const formattedQuestions = useMemo(() => questions, [questions]);
 
@@ -153,6 +160,36 @@ const InstructorDashboard = () => {
 
   const handlePointsChange = (id: string, value: number) => {
     updateQuestion(id, { points: Number.isNaN(value) ? 1 : Math.max(1, value) });
+  };
+
+  const handleQuestionTypeChange = (id: string, questionType: QuestionType) => {
+    updateQuestion(id, { 
+      questionType,
+      mediaUrl: undefined, // Clear media URL when changing type
+      options: questionType === 'mcq' ? [createEmptyOption(true), createEmptyOption(false)] : []
+    });
+  };
+
+  const handleMediaUpload = async (id: string, file: File) => {
+    setUploadingMedia(id);
+    
+    try {
+      const formData = new FormData();
+      formData.append('media', file);
+      
+      const response = await apiClient.post('/api/upload/media', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      
+      updateQuestion(id, { mediaUrl: response.data.url });
+    } catch (error) {
+      console.error('Media upload failed:', error);
+      setError('Failed to upload media file.');
+    } finally {
+      setUploadingMedia(null);
+    }
   };
 
   const handleAddOption = (questionId: string) => {
@@ -232,21 +269,28 @@ const InstructorDashboard = () => {
         return `Question ${index + 1} requires text.`;
       }
 
-      if (question.options.length < 2) {
-        return `Question ${index + 1} needs at least two options.`;
-      }
-
-      if (!question.options.some((option) => option.isCorrect)) {
-        return `Question ${index + 1} needs one correct option.`;
-      }
-
       if (question.points <= 0) {
         return `Question ${index + 1} needs points greater than 0.`;
       }
 
-      for (const [optIndex, option] of question.options.entries()) {
-        if (!option.optionText.trim()) {
-          return `Question ${index + 1}, option ${optIndex + 1} needs text.`;
+      // Validate based on question type
+      if (question.questionType === 'mcq') {
+        if (question.options.length < 2) {
+          return `Question ${index + 1} needs at least two options.`;
+        }
+
+        if (!question.options.some((option) => option.isCorrect)) {
+          return `Question ${index + 1} needs one correct option.`;
+        }
+
+        for (const [optIndex, option] of question.options.entries()) {
+          if (!option.optionText.trim()) {
+            return `Question ${index + 1}, option ${optIndex + 1} needs text.`;
+          }
+        }
+      } else if (question.questionType === 'video' || question.questionType === 'photo') {
+        if (!question.mediaUrl) {
+          return `Question ${index + 1} requires a ${question.questionType} file.`;
         }
       }
     }
@@ -293,6 +337,8 @@ const InstructorDashboard = () => {
         createdBy: user.id,
         questions: formattedQuestions.map((question) => ({
           questionText: question.questionText.trim(),
+          questionType: question.questionType,
+          mediaUrl: question.mediaUrl,
           points: question.points,
           options: question.options.map((option) => ({
             optionText: option.optionText.trim(),
@@ -319,6 +365,11 @@ const InstructorDashboard = () => {
     window.open(`${API_BASE_URL}/api/quiz/${quizId}/export?format=${format}`, '_blank');
   };
 
+  const handleViewResponses = (quizId: number) => {
+    // Open responses in a new tab/window
+    window.open(`${API_BASE_URL}/api/quiz/${quizId}/export?format=html`, '_blank');
+  };
+
   const handleViewQuiz = async (quizId: number) => {
     setActiveTab('quizzes');
     try {
@@ -333,9 +384,11 @@ const InstructorDashboard = () => {
       setDurationMinutes(quiz.durationMinutes.toString());
       setAccessPassword(quiz.accessPassword);
       
-      const loadedQuestions = quiz.questions.map((q: { questionText: string; points: number; options: Array<{ optionText: string; isCorrect: boolean }> }) => ({
+      const loadedQuestions = quiz.questions.map((q: { questionText: string; questionType: QuestionType; mediaUrl?: string; points: number; options: Array<{ optionText: string; isCorrect: boolean }> }) => ({
         id: createId(),
         questionText: q.questionText,
+        questionType: q.questionType || 'mcq',
+        mediaUrl: q.mediaUrl,
         points: q.points,
         options: q.options.map((opt: { optionText: string; isCorrect: boolean }) => ({
           id: createId(),
@@ -382,6 +435,8 @@ const InstructorDashboard = () => {
         accessPassword: accessPassword.trim(),
         questions: formattedQuestions.map((question) => ({
           questionText: question.questionText.trim(),
+          questionType: question.questionType,
+          mediaUrl: question.mediaUrl,
           points: question.points,
           options: question.options.map((option) => ({
             optionText: option.optionText.trim(),
@@ -457,6 +512,109 @@ const InstructorDashboard = () => {
   const handleSignOut = () => {
     localStorage.removeItem('guardian_user');
     navigate('/signin');
+  };
+
+  const parseCSV = (csvText: string): Array<{ questionNo: number; question: string; marks: number }> => {
+    const lines = csvText.trim().split('\n');
+    const questions: Array<{ questionNo: number; question: string; marks: number }> = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      // Parse CSV line (handle quoted fields)
+      const fields = [];
+      let currentField = '';
+      let inQuotes = false;
+      
+      for (let j = 0; j < line.length; j++) {
+        const char = line[j];
+        
+        if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          fields.push(currentField.trim());
+          currentField = '';
+        } else {
+          currentField += char;
+        }
+      }
+      fields.push(currentField.trim());
+      
+      if (fields.length < 3) {
+        throw new Error(`Row ${i + 1}: Expected 3 columns (Question No, Question, Marks), found ${fields.length}`);
+      }
+      
+      const questionNo = parseInt(fields[0]);
+      const question = fields[1];
+      const marks = parseInt(fields[2]);
+      
+      if (isNaN(questionNo) || questionNo <= 0) {
+        throw new Error(`Row ${i + 1}: Question number must be a positive integer`);
+      }
+      
+      if (!question.trim()) {
+        throw new Error(`Row ${i + 1}: Question text cannot be empty`);
+      }
+      
+      if (isNaN(marks) || marks <= 0) {
+        throw new Error(`Row ${i + 1}: Marks must be a positive integer`);
+      }
+      
+      questions.push({ questionNo, question, marks });
+    }
+    
+    return questions;
+  };
+
+  const handleCSVImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    
+    setCsvImportError(null);
+    
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setCsvImportError('Please select a CSV file.');
+      return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const csvText = e.target?.result as string;
+        const csvQuestions = parseCSV(csvText);
+        
+        if (csvQuestions.length === 0) {
+          setCsvImportError('CSV file is empty or contains no valid questions.');
+          return;
+        }
+        
+        // Convert CSV questions to QuestionForm format
+        const newQuestions: QuestionForm[] = csvQuestions.map((csvQ) => ({
+          id: createId(),
+          questionText: csvQ.question,
+          questionType: 'mcq', // Default to MCQ for CSV imports
+          points: csvQ.marks,
+          options: [createEmptyOption(true), createEmptyOption(false)], // Default 2 options
+        }));
+        
+        // Replace existing questions with imported ones
+        setQuestions(newQuestions);
+        setFeedback(`Successfully imported ${newQuestions.length} questions from CSV.`);
+        
+      } catch (error) {
+        setCsvImportError(error instanceof Error ? error.message : 'Failed to parse CSV file.');
+      }
+    };
+    
+    reader.onerror = () => {
+      setCsvImportError('Failed to read the CSV file.');
+    };
+    
+    reader.readAsText(file);
+    
+    // Reset the input
+    event.target.value = '';
   };
 
   if (!user) {
@@ -632,13 +790,38 @@ const InstructorDashboard = () => {
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <h3 className="text-lg font-semibold text-slate-900">Questions</h3>
-                  <button
-                    type="button"
-                    onClick={handleAddQuestion}
-                    className="rounded-lg border border-indigo-500 px-4 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-50"
-                  >
-                    Add question
-                  </button>
+                  <div className="flex gap-3">
+                    <label className="cursor-pointer rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+                      Import CSV
+                      <input
+                        type="file"
+                        accept=".csv"
+                        onChange={handleCSVImport}
+                        className="hidden"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleAddQuestion}
+                      className="rounded-lg border border-indigo-500 px-4 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-50"
+                    >
+                      Add question
+                    </button>
+                  </div>
+                </div>
+
+                {csvImportError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {csvImportError}
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                  <strong>CSV Format:</strong> Question No, Question, Marks
+                  <br />
+                  <span className="text-xs text-blue-600">
+                    Example: 1,"What is 2+2?",5
+                  </span>
                 </div>
 
                 {formattedQuestions.map((question, questionIndex) => (
@@ -659,38 +842,93 @@ const InstructorDashboard = () => {
                       </button>
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_160px]">
-                      <label className="flex flex-col gap-2">
-                        <span className="text-sm font-medium text-slate-700">Question Text *</span>
-                        <textarea
-                          value={question.questionText}
-                          onChange={(event) =>
-                            handleQuestionTextChange(question.id, event.target.value)
-                          }
-                          rows={3}
-                          className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
-                          placeholder="Enter the question prompt"
-                        />
-                      </label>
+                    <div className="space-y-4">
+                      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_160px]">
+                        <label className="flex flex-col gap-2">
+                          <span className="text-sm font-medium text-slate-700">Question Text *</span>
+                          <textarea
+                            value={question.questionText}
+                            onChange={(event) =>
+                              handleQuestionTextChange(question.id, event.target.value)
+                            }
+                            rows={3}
+                            className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                            placeholder="Enter the question prompt"
+                          />
+                        </label>
 
-                      <label className="flex flex-col gap-2">
-                        <span className="text-sm font-medium text-slate-700">Points *</span>
-                        <input
-                          type="number"
-                          min={1}
-                          value={question.points}
-                          onChange={(event) =>
-                            handlePointsChange(question.id, Number(event.target.value))
-                          }
-                          className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
-                        />
-                      </label>
+                        <label className="flex flex-col gap-2">
+                          <span className="text-sm font-medium text-slate-700">Points *</span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={question.points}
+                            onChange={(event) =>
+                              handlePointsChange(question.id, Number(event.target.value))
+                            }
+                            className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_200px]">
+                        <label className="flex flex-col gap-2">
+                          <span className="text-sm font-medium text-slate-700">Question Type *</span>
+                          <select
+                            value={question.questionType}
+                            onChange={(event) =>
+                              handleQuestionTypeChange(question.id, event.target.value as QuestionType)
+                            }
+                            className="rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                          >
+                            <option value="mcq">Multiple Choice (MCQ)</option>
+                            <option value="descriptive">Descriptive</option>
+                            <option value="video">Video Question</option>
+                            <option value="photo">Photo Question</option>
+                          </select>
+                        </label>
+
+                        {(question.questionType === 'video' || question.questionType === 'photo') && (
+                          <div className="flex flex-col gap-2">
+                            <span className="text-sm font-medium text-slate-700">
+                              {question.questionType === 'video' ? 'Video File' : 'Photo File'} *
+                            </span>
+                            {question.mediaUrl ? (
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm text-green-600">✓ File uploaded</span>
+                                <button
+                                  type="button"
+                                  onClick={() => updateQuestion(question.id, { mediaUrl: undefined })}
+                                  className="text-sm text-red-600 hover:text-red-700"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ) : (
+                              <label className="cursor-pointer rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm hover:bg-slate-50">
+                                {uploadingMedia === question.id ? 'Uploading...' : `Upload ${question.questionType}`}
+                                <input
+                                  type="file"
+                                  accept={question.questionType === 'video' ? 'video/*' : 'image/*'}
+                                  onChange={(event) => {
+                                    const file = event.target.files?.[0];
+                                    if (file) handleMediaUpload(question.id, file);
+                                  }}
+                                  className="hidden"
+                                  disabled={uploadingMedia === question.id}
+                                />
+                              </label>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="mt-6 space-y-4">
-                      <h5 className="text-sm font-semibold text-slate-700">Options</h5>
-                      <div className="space-y-3">
-                        {question.options.map((option, optionIndex) => (
+                    {question.questionType === 'mcq' && (
+                      <div className="mt-6 space-y-4">
+                        <h5 className="text-sm font-semibold text-slate-700">Options</h5>
+                        <div className="space-y-3">
+                          {question.options.map((option, optionIndex) => (
                           <div
                             key={option.id}
                             className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4 md:flex-row md:items-center"
@@ -748,6 +986,7 @@ const InstructorDashboard = () => {
                         Add option (max 6)
                       </button>
                     </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -860,6 +1099,12 @@ const InstructorDashboard = () => {
                     className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
                   >
                     View/Edit
+                  </button>
+                  <button
+                    onClick={() => handleViewResponses(quiz.id)}
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    View Responses
                   </button>
                   <button
                     onClick={() => handleExport(quiz.id, 'csv')}

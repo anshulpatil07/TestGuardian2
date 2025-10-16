@@ -26,9 +26,13 @@ type Option = {
   optionText: string;
 };
 
+type QuestionType = 'mcq' | 'descriptive' | 'video' | 'photo';
+
 type Question = {
   id: number;
   questionText: string;
+  questionType: QuestionType;
+  mediaUrl?: string;
   points: number;
   options: Option[];
 };
@@ -42,7 +46,9 @@ type QuizData = {
 
 type SelectedAnswer = {
   questionId: number;
-  optionId: number | null;
+  optionId?: number | null;
+  textResponse?: string;
+  mediaResponse?: string;
 };
 
 type Violation = {
@@ -229,7 +235,9 @@ const QuizAttempt = () => {
         // Initialize selected answers array
         const initialAnswers = quizData.questions.map((q) => ({
           questionId: q.id,
-          optionId: null,
+          optionId: q.questionType === 'mcq' ? null : undefined,
+          textResponse: (q.questionType === 'descriptive' || q.questionType === 'video' || q.questionType === 'photo') ? '' : undefined,
+          mediaResponse: undefined, // Not used anymore
         }));
         setSelectedAnswers(initialAnswers);
 
@@ -273,6 +281,8 @@ const QuizAttempt = () => {
       const response = await apiClient.post(`/api/quiz/${quiz.id}/attempt`, {
         userId: user.id,
         responses,
+        violations,
+        status: isAutoSubmitting ? 'auto_submitted' : 'submitted',
       });
 
       const { score, maxScore, attemptId } = response.data;
@@ -286,7 +296,7 @@ const QuizAttempt = () => {
     } finally {
       setIsSubmitting(false);
     }
-  }, [user, quiz, isSubmitting, selectedAnswers, timeRemaining, isAutoSubmitting]);
+  }, [user, quiz, isSubmitting, selectedAnswers, timeRemaining, isAutoSubmitting, violations]);
 
   // Store the submit handler in ref for use in warning trigger
   useEffect(() => {
@@ -340,6 +350,13 @@ const QuizAttempt = () => {
     setSelectedAnswers(updatedAnswers);
   };
 
+  const handleTextResponseChange = (text: string) => {
+    const updatedAnswers = [...selectedAnswers];
+    updatedAnswers[currentQuestionIndex].textResponse = text;
+    setSelectedAnswers(updatedAnswers);
+  };
+
+
   const handleNext = () => {
     if (!quiz) return;
     if (currentQuestionIndex < quiz.questions.length - 1) {
@@ -392,7 +409,12 @@ const QuizAttempt = () => {
   }
 
   const currentQuestion = quiz.questions[currentQuestionIndex];
-  const currentAnswer = selectedAnswers[currentQuestionIndex];
+  const currentAnswer = selectedAnswers[currentQuestionIndex] || {
+    questionId: currentQuestion.id,
+    optionId: currentQuestion.questionType === 'mcq' ? null : undefined,
+    textResponse: (currentQuestion.questionType === 'descriptive' || currentQuestion.questionType === 'video' || currentQuestion.questionType === 'photo') ? '' : undefined,
+    mediaResponse: undefined, // Not used anymore
+  };
   const isLastQuestion = currentQuestionIndex === quiz.questions.length - 1;
 
   return (
@@ -504,7 +526,7 @@ const QuizAttempt = () => {
       )}
 
       <header className="bg-white shadow-sm border-b border-slate-200">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">{quiz.title}</h1>
             <p className="text-sm text-slate-500">
@@ -552,8 +574,9 @@ const QuizAttempt = () => {
         </div>
       </header>
 
-      <main className="mx-auto mt-10 max-w-4xl px-6">
-        <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+      <main className="mx-auto mt-10 max-w-6xl px-6">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6 items-start">
+          <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
           <div className="mb-6">
             <div className="flex items-start justify-between mb-4">
               <h2 className="text-lg font-semibold text-slate-900">
@@ -563,52 +586,106 @@ const QuizAttempt = () => {
                 {currentQuestion.points} {currentQuestion.points === 1 ? 'point' : 'points'}
               </span>
             </div>
+            
+            {/* Display media for video/photo questions */}
+            {currentQuestion.mediaUrl && (
+              <div className="mb-4">
+                {currentQuestion.questionType === 'video' ? (
+                  <video
+                    controls
+                    className="w-full max-w-md rounded-lg"
+                    src={currentQuestion.mediaUrl.startsWith('http') ? currentQuestion.mediaUrl : `http://localhost:5000${currentQuestion.mediaUrl}`}
+                  >
+                    Your browser does not support the video tag.
+                  </video>
+                ) : currentQuestion.questionType === 'photo' ? (
+                  <img
+                    src={currentQuestion.mediaUrl.startsWith('http') ? currentQuestion.mediaUrl : `http://localhost:5000${currentQuestion.mediaUrl}`}
+                    alt="Question image"
+                    className="w-full max-w-md rounded-lg"
+                  />
+                ) : null}
+              </div>
+            )}
           </div>
 
-          <div className="space-y-3">
-            {currentQuestion.options.map((option) => {
-              const isSelected = currentAnswer.optionId === option.id;
+          {/* Render based on question type */}
+          {currentQuestion.questionType === 'mcq' && (
+            <div className="space-y-3">
+              {currentQuestion.options.map((option) => {
+                const isSelected = currentAnswer.optionId === option.id;
 
-              return (
-                <button
-                  key={option.id}
-                  onClick={() => handleSelectOption(option.id)}
-                  className={`w-full rounded-xl border-2 p-4 text-left transition ${
-                    isSelected
-                      ? 'border-indigo-600 bg-indigo-50'
-                      : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="flex items-center">
-                    <div
-                      className={`mr-3 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border-2 ${
-                        isSelected
-                          ? 'border-indigo-600 bg-indigo-600'
-                          : 'border-slate-300 bg-white'
-                      }`}
-                    >
-                      {isSelected && (
-                        <svg
-                          className="h-4 w-4 text-white"
-                          fill="currentColor"
-                          viewBox="0 0 20 20"
-                        >
-                          <path
-                            fillRule="evenodd"
-                            d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                            clipRule="evenodd"
-                          />
-                        </svg>
-                      )}
+                return (
+                  <button
+                    key={option.id}
+                    onClick={() => handleSelectOption(option.id)}
+                    className={`w-full rounded-xl border-2 p-4 text-left transition ${
+                      isSelected
+                        ? 'border-indigo-600 bg-indigo-50'
+                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center">
+                      <div
+                        className={`mr-3 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border-2 ${
+                          isSelected
+                            ? 'border-indigo-600 bg-indigo-600'
+                            : 'border-slate-300 bg-white'
+                        }`}
+                      >
+                        {isSelected && (
+                          <svg
+                            className="h-4 w-4 text-white"
+                            fill="currentColor"
+                            viewBox="0 0 20 20"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        )}
+                      </div>
+                      <span className={`${isSelected ? 'font-medium text-slate-900' : 'text-slate-700'}`}>
+                        {option.optionText}
+                      </span>
                     </div>
-                    <span className={`${isSelected ? 'font-medium text-slate-900' : 'text-slate-700'}`}>
-                      {option.optionText}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {currentQuestion.questionType === 'descriptive' && (
+            <div className="space-y-4">
+              <label className="block text-sm font-medium text-slate-700">
+                Your Answer
+              </label>
+              <textarea
+                value={currentAnswer.textResponse || ''}
+                onChange={(e) => handleTextResponseChange(e.target.value)}
+                rows={6}
+                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                placeholder="Type your answer here..."
+              />
+            </div>
+          )}
+
+          {(currentQuestion.questionType === 'video' || currentQuestion.questionType === 'photo') && (
+            <div className="space-y-4">
+              <label className="block text-sm font-medium text-slate-700">
+                Your Answer
+              </label>
+              <textarea
+                value={currentAnswer.textResponse || ''}
+                onChange={(e) => handleTextResponseChange(e.target.value)}
+                rows={6}
+                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm shadow-sm focus:border-indigo-500 focus:outline-none"
+                placeholder={`Describe what you see in the ${currentQuestion.questionType}...`}
+              />
+            </div>
+          )}
 
           <div className="mt-8 flex items-center justify-between border-t border-slate-200 pt-6">
             <button
@@ -624,20 +701,29 @@ const QuizAttempt = () => {
             </button>
 
             <div className="flex gap-1">
-              {quiz.questions.map((_, index) => (
-                <button
-                  key={index}
-                  onClick={() => setCurrentQuestionIndex(index)}
-                  className={`h-2.5 w-2.5 rounded-full transition ${
-                    index === currentQuestionIndex
-                      ? 'bg-indigo-600'
-                      : selectedAnswers[index].optionId !== null
-                      ? 'bg-green-500'
-                      : 'bg-slate-300'
-                  }`}
-                  title={`Question ${index + 1}`}
-                />
-              ))}
+              {quiz.questions.map((q, index) => {
+                const ans = selectedAnswers[index];
+                const answered = q.questionType === 'mcq'
+                  ? ans.optionId !== null
+                  : (ans.textResponse || '').trim().length > 0;
+                const skipped = !answered && index < currentQuestionIndex;
+                return (
+                  <button
+                    key={index}
+                    onClick={() => setCurrentQuestionIndex(index)}
+                    className={`h-2.5 w-2.5 rounded-full transition ${
+                      index === currentQuestionIndex
+                        ? 'bg-indigo-600'
+                        : answered
+                        ? 'bg-green-500'
+                        : skipped
+                        ? 'bg-red-500'
+                        : 'bg-slate-300'
+                    }`}
+                    title={`Question ${index + 1}`}
+                  />
+                );
+              })}
             </div>
 
             {isLastQuestion ? (
@@ -657,6 +743,79 @@ const QuizAttempt = () => {
               </button>
             )}
           </div>
+          </div>
+
+          {/* Right-side question panel */}
+          <aside className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm h-full sticky top-6">
+            <div className="mb-4">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold">
+                  {user.name?.charAt(0)?.toUpperCase()}
+                </div>
+                <div>
+                  <div className="text-sm text-slate-500">Candidate</div>
+                  <div className="font-semibold text-slate-900 truncate max-w-[200px]" title={user.name}>{user.name}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-900">Question Palette</h3>
+              {timeRemaining !== null && (
+                <div className={`px-2 py-1 rounded text-xs font-semibold ${
+                  timeRemaining < 60 ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-700'
+                }`}>
+                  {formatTime(timeRemaining)}
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-5 gap-2">
+              {quiz.questions.map((q, index) => {
+                const ans = selectedAnswers[index];
+                const answered = q.questionType === 'mcq'
+                  ? ans.optionId !== null
+                  : (ans.textResponse || '').trim().length > 0;
+                const skipped = !answered && index < currentQuestionIndex;
+                const isCurrent = index === currentQuestionIndex;
+                return (
+                  <button
+                    key={q.id}
+                    onClick={() => setCurrentQuestionIndex(index)}
+                    className={`h-10 w-10 rounded-lg text-sm font-semibold flex items-center justify-center border transition ${
+                      isCurrent
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
+                        : answered
+                        ? 'border-green-600 bg-green-50 text-green-700'
+                        : skipped
+                        ? 'border-red-600 bg-red-50 text-red-700'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                    title={`Question ${index + 1}`}
+                  >
+                    {index + 1}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-2 text-xs text-slate-600">
+              <div className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-green-500 inline-block" /> Answered</div>
+              <div className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-red-500 inline-block" /> Skipped</div>
+              <div className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-slate-300 inline-block" /> Not visited</div>
+            </div>
+
+            <div className="mt-6 space-y-2">
+              <button
+                onClick={handleSubmitQuiz}
+                disabled={isSubmitting}
+                className="w-full rounded-lg bg-green-600 px-4 py-2.5 font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSubmitting ? 'Submitting...' : 'Submit Quiz'}
+              </button>
+              <div className="text-[11px] text-slate-500 text-center">Review your palette before submitting</div>
+            </div>
+          </aside>
         </div>
       </main>
 

@@ -105,7 +105,7 @@ router.post('/verify-password', async (req, res) => {
 router.post('/:id/attempt', async (req, res) => {
   try {
     const quizId = Number(req.params.id);
-    const { userId, responses } = req.body;
+    const { userId, responses, violations = [], status } = req.body;
 
     if (!userId || !responses || !Array.isArray(responses)) {
       return res.status(400).json({ message: 'User ID and responses array are required' });
@@ -152,7 +152,7 @@ router.post('/:id/attempt', async (req, res) => {
           quizId: quizId,
           startedAt: new Date(),
           submittedAt: new Date(),
-          status: 'submitted'
+          status: status === 'auto_submitted' ? 'auto_submitted' : 'submitted'
         }
       });
 
@@ -166,8 +166,19 @@ router.post('/:id/attempt', async (req, res) => {
 
         maxScore += question.points;
 
-        const selectedOption = question.options.find((opt) => opt.id === Number(response.optionId));
-        const isCorrect = selectedOption?.isCorrect || false;
+        let isCorrect = false;
+        
+        // Handle different question types
+        if (question.questionType === 'mcq') {
+          const selectedOption = question.options.find((opt) => opt.id === Number(response.optionId));
+          isCorrect = selectedOption?.isCorrect || false;
+        } else if (question.questionType === 'descriptive') {
+          // For descriptive questions, we don't auto-grade, so no points awarded
+          isCorrect = false;
+        } else if (question.questionType === 'video' || question.questionType === 'photo') {
+          // For media questions, we don't auto-grade, so no points awarded
+          isCorrect = false;
+        }
 
         if (isCorrect) {
           totalScore += question.points;
@@ -177,9 +188,26 @@ router.post('/:id/attempt', async (req, res) => {
           data: {
             attemptId: attempt.id,
             questionId: Number(response.questionId),
-            selectedOptionId: Number(response.optionId)
+            selectedOptionId: response.optionId ? Number(response.optionId) : null,
+            textResponse: response.textResponse || null,
+            mediaResponse: response.mediaResponse || null
           }
         });
+      }
+
+      // Persist violations as warnings if provided
+      let warningsCreated = 0;
+      if (Array.isArray(violations) && violations.length > 0) {
+        const warningCreates = violations.map((v) => tx.warning.create({
+          data: {
+            attemptId: attempt.id,
+            userId: Number(userId),
+            warningType: String(v?.type || 'violation'),
+            // timestamp defaults to now()
+          }
+        }));
+        await Promise.all(warningCreates);
+        warningsCreated = violations.length;
       }
 
       // Update attempt with final score
@@ -187,14 +215,15 @@ router.post('/:id/attempt', async (req, res) => {
         where: { id: attempt.id },
         data: { 
           score: totalScore,
-          status: 'submitted'
+          status: status === 'auto_submitted' ? 'auto_submitted' : 'submitted'
         }
       });
 
       return {
         attempt: updatedAttempt,
         totalScore,
-        maxScore
+        maxScore,
+        warningsCreated
       };
     });
 
@@ -202,7 +231,8 @@ router.post('/:id/attempt', async (req, res) => {
       message: 'Quiz submitted successfully',
       attemptId: result.attempt.id,
       score: result.totalScore,
-      maxScore: result.maxScore
+      maxScore: result.maxScore,
+      violationsSaved: result.warningsCreated
     });
   } catch (error) {
     console.error('Error submitting quiz attempt:', error);
@@ -227,6 +257,8 @@ router.get('/:id/questions', async (req, res) => {
           select: {
             id: true,
             questionText: true,
+            questionType: true,
+            mediaUrl: true,
             points: true,
             options: {
               select: {
@@ -292,33 +324,52 @@ router.get('/:id/attempt-status/:userId', async (req, res) => {
 
 const sanitizeDate = (value) => (value ? new Date(value) : null);
 
+const escapeCsvValue = (value) => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  const stringValue = String(value);
+  return /[",\n]/.test(stringValue)
+    ? `"${stringValue.replace(/"/g, '""')}"`
+    : stringValue;
+};
+
 const ensureQuestionValidity = (question, index) => {
   if (!question.questionText || typeof question.questionText !== 'string') {
     throw new Error(`Question ${index + 1} is missing text.`);
   }
 
-  const options = question.options ?? [];
-  if (!Array.isArray(options) || options.length < 2 || options.length > 6) {
-    throw new Error(`Question ${index + 1} must have between 2 and 6 options.`);
-  }
-
-  const correctCount = options.filter((opt) => opt.isCorrect).length;
-  if (correctCount !== 1) {
-    throw new Error(`Question ${index + 1} must have exactly one correct option.`);
-  }
-
+  const questionType = question.questionType || 'mcq';
   const points = Number.parseInt(question.points ?? 1, 10);
   if (Number.isNaN(points) || points <= 0) {
     throw new Error(`Question ${index + 1} must have a point value greater than 0.`);
   }
 
-  options.forEach((option, optionIndex) => {
-    if (!option.optionText || typeof option.optionText !== 'string') {
-      throw new Error(
-        `Question ${index + 1}, option ${optionIndex + 1} must include option text.`
-      );
+  // Validate based on question type
+  if (questionType === 'mcq') {
+    const options = question.options ?? [];
+    if (!Array.isArray(options) || options.length < 2 || options.length > 6) {
+      throw new Error(`Question ${index + 1} must have between 2 and 6 options.`);
     }
-  });
+
+    const correctCount = options.filter((opt) => opt.isCorrect).length;
+    if (correctCount !== 1) {
+      throw new Error(`Question ${index + 1} must have exactly one correct option.`);
+    }
+
+    options.forEach((option, optionIndex) => {
+      if (!option.optionText || typeof option.optionText !== 'string') {
+        throw new Error(
+          `Question ${index + 1}, option ${optionIndex + 1} must include option text.`
+        );
+      }
+    });
+  } else if (questionType === 'video' || questionType === 'photo') {
+    if (!question.mediaUrl || typeof question.mediaUrl !== 'string') {
+      throw new Error(`Question ${index + 1} requires a ${questionType} file.`);
+    }
+  }
+  // Descriptive questions don't need additional validation
 };
 
 const coerceToInt = (value, fallbackMessage) => {
@@ -412,15 +463,17 @@ router.post('/', async (req, res) => {
         questions: {
           create: questions.map((question) => ({
             questionText: question.questionText.trim(),
+            questionType: question.questionType || 'mcq',
+            mediaUrl: question.mediaUrl || null,
             points: coerceToInt(
               question.points ?? 1,
               'Question points must be a valid integer.'
             ),
             options: {
-              create: question.options.map((option) => ({
+              create: question.options?.map((option) => ({
                 optionText: option.optionText.trim(),
                 isCorrect: Boolean(option.isCorrect),
-              })),
+              })) || [],
             },
           })),
         },
@@ -581,14 +634,25 @@ router.get('/:id/export', async (req, res) => {
             responses: {
               include: {
                 question: {
-                  select: { id: true, points: true },
+                  select: { 
+                    id: true, 
+                    questionText: true,
+                    questionType: true,
+                    points: true 
+                  },
                 },
                 selectedOption: {
-                  select: { id: true, isCorrect: true },
+                  select: { id: true, optionText: true, isCorrect: true },
                 },
               },
             },
+            // If Warning model exists, include it; otherwise, omit
           },
+          // Do not depend on warnings count
+        },
+        questions: {
+          include: { options: true },
+          orderBy: { id: 'asc' }
         },
       },
     });
@@ -599,14 +663,120 @@ router.get('/:id/export', async (req, res) => {
 
     const records = quiz.attempts.map((attempt) => {
       const score = buildAttemptScore(attempt);
+      // Avoid referencing warnings if the table/relation isn't present
+      const violationCount = 0;
+      const responses = attempt.responses.map((response) => {
+        let answerText = '';
+        
+        if (response.question.questionType === 'mcq') {
+          answerText = response.selectedOption?.optionText || 'No answer';
+        } else if (response.question.questionType === 'descriptive') {
+          answerText = response.textResponse || 'No answer';
+        } else if (response.question.questionType === 'video' || response.question.questionType === 'photo') {
+          answerText = response.mediaResponse || 'No file uploaded';
+        }
+        
+        return {
+          questionText: response.question.questionText,
+          questionType: response.question.questionType,
+          answer: answerText,
+          points: response.question.points,
+          isCorrect: response.selectedOption?.isCorrect || false
+        };
+      });
+      
       return {
         studentName: attempt.user?.name ?? 'Unknown',
         studentEmail: attempt.user?.email ?? 'Unknown',
         status: attempt.status,
         score,
         submittedAt: attempt.submittedAt?.toISOString?.() ?? '',
+        responses: responses,
+        violationCount,
       };
     });
+
+    if (format === 'html') {
+      res.setHeader('Content-Type', 'text/html');
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="quiz-${quizId}-responses.html"`
+      );
+      
+      let html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Quiz Responses - ${quiz.title}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .header { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
+            .attempt { border: 1px solid #ddd; margin-bottom: 20px; padding: 15px; border-radius: 5px; }
+            .student-info { background-color: #f5f5f5; padding: 10px; border-radius: 3px; margin-bottom: 15px; }
+            .response { margin-bottom: 15px; padding: 10px; border-left: 3px solid #007bff; }
+            .question { font-weight: bold; margin-bottom: 5px; }
+            .answer { margin-left: 20px; }
+            .correct { color: green; }
+            .incorrect { color: red; }
+            .no-answer { color: #666; font-style: italic; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Quiz Responses: ${quiz.title}</h1>
+            <p>Generated: ${new Date().toLocaleString()}</p>
+          </div>
+      `;
+      
+      if (!records.length) {
+        html += '<p>No attempts recorded for this quiz yet.</p>';
+      } else {
+        records.forEach((record, index) => {
+          html += `
+            <div class="attempt">
+              <div class="student-info">
+                <h3>Attempt #${index + 1}</h3>
+                <p><strong>Student:</strong> ${record.studentName}</p>
+                <p><strong>Email:</strong> ${record.studentEmail}</p>
+                <p><strong>Status:</strong> ${record.status}</p>
+                <p><strong>Score:</strong> ${record.score}</p>
+                <p><strong>Submitted:</strong> ${record.submittedAt ? new Date(record.submittedAt).toLocaleString() : 'N/A'}</p>
+                <p><strong>Violations:</strong> ${record.violationCount}</p>
+              </div>
+              <div class="responses">
+                <h4>Responses:</h4>
+          `;
+          
+          record.responses.forEach((response, qIndex) => {
+            const answerClass = response.questionType === 'mcq' 
+              ? (response.isCorrect ? 'correct' : 'incorrect')
+              : '';
+            const answerText = response.answer || 'No answer provided';
+            
+            html += `
+              <div class="response">
+                <div class="question">${qIndex + 1}. ${response.questionText} (${response.questionType.toUpperCase()})</div>
+                <div class="answer ${answerClass}">${answerText}</div>
+                ${response.questionType === 'mcq' ? `<div>Correct: ${response.isCorrect ? 'Yes' : 'No'}</div>` : ''}
+                <div>Points: ${response.points}</div>
+              </div>
+            `;
+          });
+          
+          html += `
+              </div>
+            </div>
+          `;
+        });
+      }
+      
+      html += `
+        </body>
+        </html>
+      `;
+      
+      return res.send(html);
+    }
 
     if (format === 'pdf') {
       res.setHeader('Content-Type', 'application/pdf');
@@ -636,6 +806,19 @@ router.get('/:id/export', async (req, res) => {
             `Submitted At: ${record.submittedAt ? new Date(record.submittedAt).toLocaleString() : 'N/A'}`
           );
           doc.moveDown();
+          
+          // Add detailed responses
+          doc.font('Helvetica-Bold').text('Responses:');
+          record.responses.forEach((response, qIndex) => {
+            doc.font('Helvetica').text(`${qIndex + 1}. ${response.questionText} (${response.questionType.toUpperCase()})`);
+            doc.text(`   Answer: ${response.answer}`);
+            if (response.questionType === 'mcq') {
+              doc.text(`   Correct: ${response.isCorrect ? 'Yes' : 'No'}`);
+            }
+            doc.text(`   Points: ${response.points}`);
+            doc.moveDown(0.5);
+          });
+          doc.moveDown();
         });
       }
 
@@ -643,34 +826,52 @@ router.get('/:id/export', async (req, res) => {
       return;
     }
 
-    // Default CSV export
-    const header = 'Student Name,Student Email,Status,Score,Submitted At';
-    const csvRows = records.map((record) =>
-      [
-        record.studentName,
-        record.studentEmail,
-        record.status,
-        record.score,
-        record.submittedAt,
-      ]
-        .map((value) => {
-          if (value === null || value === undefined) {
-            return '';
-          }
-          const stringValue = String(value);
-          return /[",\n]/.test(stringValue)
-            ? `"${stringValue.replace(/"/g, '""')}"`
-            : stringValue;
-        })
-        .join(',')
-    );
+    // Default CSV export is now question-centric per requested format
+    // Columns: Question No, Question Type, Question, Points, Option
+    const csvRows = [];
+    csvRows.push('Question No,Question Type,Question,Points,Option');
+
+    (quiz.questions || []).forEach((q, idx) => {
+      if (q.questionType === 'mcq') {
+        const opts = Array.isArray(q.options) ? q.options : [];
+        if (opts.length === 0) {
+          csvRows.push([
+            idx + 1,
+            'mcq',
+            q.questionText,
+            q.points,
+            ''
+          ].map(escapeCsvValue).join(','));
+        } else {
+          opts.forEach((opt) => {
+            csvRows.push([
+              idx + 1,
+              'mcq',
+              q.questionText,
+              q.points,
+              opt.optionText
+            ].map(escapeCsvValue).join(','));
+          });
+        }
+      } else if (q.questionType === 'descriptive') {
+        csvRows.push([
+          idx + 1,
+          'descriptive',
+          q.questionText,
+          q.points,
+          ''
+        ].map(escapeCsvValue).join(','));
+      } else {
+        // Skip unsupported types like photo/video to match requested format
+      }
+    });
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="quiz-${quizId}-results.csv"`
     );
-    return res.send([header, ...csvRows].join('\n'));
+    return res.send(csvRows.join('\n'));
   } catch (error) {
     console.error('Export quiz results error:', error);
     return res.status(500).json({ message: 'Failed to export quiz results.' });
@@ -747,15 +948,17 @@ router.put('/:id', async (req, res) => {
         questions: {
           create: questions.map((question) => ({
             questionText: question.questionText.trim(),
+            questionType: question.questionType || 'mcq',
+            mediaUrl: question.mediaUrl || null,
             points: coerceToInt(
               question.points ?? 1,
               'Question points must be a valid integer.'
             ),
             options: {
-              create: question.options.map((option) => ({
+              create: question.options?.map((option) => ({
                 optionText: option.optionText.trim(),
                 isCorrect: Boolean(option.isCorrect),
-              })),
+              })) || [],
             },
           })),
         },

@@ -5,93 +5,77 @@ interface CalculatorProps {
   onClose: () => void;
 }
 
+const evaluateExpression = (expr: string, mode: 'DEG' | 'RAD'): number => {
+  const safe = expr
+    .replace(/×/g, '*')
+    .replace(/÷/g, '/')
+    .replace(/\^/g, '**')
+    .replace(/π/g, 'PI')
+    .replace(/√/g, 'sqrt')
+    .replace(/\u221A/g, 'sqrt');
+
+  const toRad = (x: number) => (mode === 'DEG' ? (x * Math.PI) / 180 : x);
+  const sin = (x: number) => Math.sin(toRad(x));
+  const cos = (x: number) => Math.cos(toRad(x));
+  const tan = (x: number) => Math.tan(toRad(x));
+  const ln = (x: number) => Math.log(x);
+  const log = (x: number) => Math.log10(x);
+  const sqrt = (x: number) => Math.sqrt(x);
+  const pow = (a: number, b: number) => Math.pow(a, b);
+  const PI = Math.PI;
+  const E = Math.E;
+
+  const js = safe
+    .replace(/sin\(/g, 'sin(')
+    .replace(/cos\(/g, 'cos(')
+    .replace(/tan\(/g, 'tan(')
+    .replace(/ln\(/g, 'ln(')
+    .replace(/log\(/g, 'log(')
+    .replace(/sqrt\(/g, 'sqrt(')
+    .replace(/PI/g, 'PI')
+    .replace(/\bE\b/g, 'E');
+
+  // eslint-disable-next-line no-new-func
+  const fn = new Function('sin','cos','tan','ln','log','sqrt','pow','PI','E', `return (${js});`);
+  const result = fn(sin, cos, tan, ln, log, sqrt, pow, PI, E);
+  if (typeof result !== 'number' || !Number.isFinite(result)) throw new Error('Math error');
+  return result;
+};
+
 const Calculator = ({ isOpen, onClose }: CalculatorProps) => {
-  const [display, setDisplay] = useState('0');
-  const [previousValue, setPreviousValue] = useState<number | null>(null);
-  const [operation, setOperation] = useState<string | null>(null);
-  const [waitingForOperand, setWaitingForOperand] = useState(false);
-
-  const inputNumber = (num: string) => {
-    if (waitingForOperand) {
-      setDisplay(num);
-      setWaitingForOperand(false);
-    } else {
-      setDisplay(display === '0' ? num : display + num);
-    }
-  };
-
-  const inputDecimal = () => {
-    if (waitingForOperand) {
-      setDisplay('0.');
-      setWaitingForOperand(false);
-    } else if (display.indexOf('.') === -1) {
-      setDisplay(display + '.');
-    }
-  };
-
-  const clear = () => {
-    setDisplay('0');
-    setPreviousValue(null);
-    setOperation(null);
-    setWaitingForOperand(false);
-  };
-
-  const performOperation = (nextOperation: string) => {
-    const inputValue = parseFloat(display);
-
-    if (previousValue === null) {
-      setPreviousValue(inputValue);
-    } else if (operation) {
-      const currentValue = previousValue || 0;
-      const newValue = calculate(currentValue, inputValue, operation);
-
-      setDisplay(String(newValue));
-      setPreviousValue(newValue);
-    }
-
-    setWaitingForOperand(true);
-    setOperation(nextOperation);
-  };
-
-  const calculate = (firstValue: number, secondValue: number, operation: string): number => {
-    switch (operation) {
-      case '+':
-        return firstValue + secondValue;
-      case '-':
-        return firstValue - secondValue;
-      case '×':
-        return firstValue * secondValue;
-      case '÷':
-        return secondValue !== 0 ? firstValue / secondValue : 0;
-      case '=':
-        return secondValue;
-      default:
-        return secondValue;
-    }
-  };
-
-  const handleEquals = () => {
-    const inputValue = parseFloat(display);
-
-    if (previousValue !== null && operation) {
-      const newValue = calculate(previousValue, inputValue, operation);
-      setDisplay(String(newValue));
-      setPreviousValue(null);
-      setOperation(null);
-      setWaitingForOperand(true);
-    }
-  };
+  const [mode, setMode] = useState<'DEG' | 'RAD'>('DEG');
+  const [display, setDisplay] = useState<string>('0');
 
   if (!isOpen) return null;
 
+  const clearAll = () => setDisplay('0');
+  const backspace = () => setDisplay((d) => (d.length > 1 ? d.slice(0, -1) : '0'));
+  const append = (token: string) => setDisplay((d) => (d === '0' ? token : d + token));
+  const insert = (token: string) => setDisplay((d) => (d === '0' ? token : d + token));
+
+  const handleEquals = () => {
+    try {
+      const result = evaluateExpression(display, mode);
+      setDisplay(String(result));
+    } catch {
+      setDisplay('Error');
+      setTimeout(() => setDisplay('0'), 1200);
+    }
+  };
+
+  const toggleSign = () => {
+    if (display.startsWith('-')) setDisplay(display.slice(1));
+    else setDisplay(display === '0' ? '0' : '-' + display);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white rounded-2xl shadow-2xl p-6 w-80">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-900">Calculator</h3>
+      <div className="bg-slate-900 text-slate-50 rounded-2xl shadow-2xl p-4 w-[360px]">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold opacity-80">FX-82 Scientific</h3>
           <button
             onClick={onClose}
-            className="text-slate-500 hover:text-slate-700 transition-colors"
+            className="text-slate-300 hover:text-white transition-colors"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -99,135 +83,71 @@ const Calculator = ({ isOpen, onClose }: CalculatorProps) => {
           </button>
         </div>
 
-        {/* Display */}
-        <div className="mb-4">
-          <div className="bg-slate-100 rounded-lg p-4 text-right">
-            <div className="text-2xl font-mono font-semibold text-slate-900 overflow-hidden">
+        <div className="mb-3">
+          <div className="bg-slate-800 rounded-lg p-3 text-right min-h-[56px]">
+            <div className="text-2xl font-mono font-semibold overflow-x-auto whitespace-nowrap">
               {display}
             </div>
           </div>
         </div>
 
-        {/* Calculator Buttons */}
-        <div className="grid grid-cols-4 gap-3">
-          {/* Row 1 */}
-          <button
-            onClick={clear}
-            className="col-span-2 bg-red-100 text-red-700 rounded-lg p-3 font-semibold hover:bg-red-200 transition-colors"
-          >
-            Clear
-          </button>
-          <button
-            onClick={() => performOperation('÷')}
-            className="bg-indigo-100 text-indigo-700 rounded-lg p-3 font-semibold hover:bg-indigo-200 transition-colors"
-          >
-            ÷
-          </button>
-          <button
-            onClick={() => performOperation('×')}
-            className="bg-indigo-100 text-indigo-700 rounded-lg p-3 font-semibold hover:bg-indigo-200 transition-colors"
-          >
-            ×
-          </button>
-
-          {/* Row 2 */}
-          <button
-            onClick={() => inputNumber('7')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            7
-          </button>
-          <button
-            onClick={() => inputNumber('8')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            8
-          </button>
-          <button
-            onClick={() => inputNumber('9')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            9
-          </button>
-          <button
-            onClick={() => performOperation('-')}
-            className="bg-indigo-100 text-indigo-700 rounded-lg p-3 font-semibold hover:bg-indigo-200 transition-colors"
-          >
-            −
-          </button>
-
-          {/* Row 3 */}
-          <button
-            onClick={() => inputNumber('4')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            4
-          </button>
-          <button
-            onClick={() => inputNumber('5')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            5
-          </button>
-          <button
-            onClick={() => inputNumber('6')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            6
-          </button>
-          <button
-            onClick={() => performOperation('+')}
-            className="bg-indigo-100 text-indigo-700 rounded-lg p-3 font-semibold hover:bg-indigo-200 transition-colors"
-          >
-            +
-          </button>
-
-          {/* Row 4 */}
-          <button
-            onClick={() => inputNumber('1')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            1
-          </button>
-          <button
-            onClick={() => inputNumber('2')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            2
-          </button>
-          <button
-            onClick={() => inputNumber('3')}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            3
-          </button>
-          <button
-            onClick={handleEquals}
-            className="row-span-2 bg-green-100 text-green-700 rounded-lg p-3 font-semibold hover:bg-green-200 transition-colors"
-          >
-            =
-          </button>
-
-          {/* Row 5 */}
-          <button
-            onClick={() => inputNumber('0')}
-            className="col-span-2 bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            0
-          </button>
-          <button
-            onClick={inputDecimal}
-            className="bg-slate-100 text-slate-700 rounded-lg p-3 font-semibold hover:bg-slate-200 transition-colors"
-          >
-            .
-          </button>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setMode(mode === 'DEG' ? 'RAD' : 'DEG')}
+              className={`px-3 py-1 rounded text-xs font-semibold ${mode === 'DEG' ? 'bg-amber-500 text-black' : 'bg-slate-700 text-slate-200'}`}
+            >
+              {mode}
+            </button>
+            <span className="text-xs opacity-70">Angle</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={clearAll} className="px-3 py-1 rounded bg-red-600/20 text-red-300 text-xs font-semibold hover:bg-red-600/30">AC</button>
+            <button onClick={backspace} className="px-3 py-1 rounded bg-slate-700 text-slate-200 text-xs font-semibold hover:bg-slate-600">DEL</button>
+          </div>
         </div>
 
-        {/* Instructions */}
-        <div className="mt-4 text-center">
-          <p className="text-sm text-slate-500">
-            Use this calculator for mathematical calculations during your quiz
-          </p>
+        <div className="grid grid-cols-5 gap-2">
+          <button onClick={() => insert('sin(')} className="bg-slate-800 rounded py-2 text-sm">sin</button>
+          <button onClick={() => insert('cos(')} className="bg-slate-800 rounded py-2 text-sm">cos</button>
+          <button onClick={() => insert('tan(')} className="bg-slate-800 rounded py-2 text-sm">tan</button>
+          <button onClick={() => insert('ln(')} className="bg-slate-800 rounded py-2 text-sm">ln</button>
+          <button onClick={() => insert('log(')} className="bg-slate-800 rounded py-2 text-sm">log</button>
+
+          <button onClick={() => append('(')} className="bg-slate-800 rounded py-2 text-sm">(</button>
+          <button onClick={() => append(')')} className="bg-slate-800 rounded py-2 text-sm">)</button>
+          <button onClick={() => append('^2')} className="bg-slate-800 rounded py-2 text-sm">x²</button>
+          <button onClick={() => append('^')} className="bg-slate-800 rounded py-2 text-sm">xʸ</button>
+          <button onClick={() => insert('sqrt(')} className="bg-slate-800 rounded py-2 text-sm">√</button>
+
+          <button onClick={() => append('π')} className="bg-slate-800 rounded py-2 text-sm">π</button>
+          <button onClick={() => append('E')} className="bg-slate-800 rounded py-2 text-sm">e</button>
+          <button onClick={() => setDisplay((d)=> (d==='0'?'(1/':d+'(1/'))} className="bg-slate-800 rounded py-2 text-sm">1/x</button>
+          <button onClick={() => append('×')} className="bg-indigo-700/30 rounded py-2 text-sm">×</button>
+          <button onClick={() => append('÷')} className="bg-indigo-700/30 rounded py-2 text-sm">÷</button>
+
+          <button onClick={() => append('7')} className="bg-slate-700 rounded py-2 text-lg">7</button>
+          <button onClick={() => append('8')} className="bg-slate-700 rounded py-2 text-lg">8</button>
+          <button onClick={() => append('9')} className="bg-slate-700 rounded py-2 text-lg">9</button>
+          <button onClick={() => append('-')} className="bg-indigo-700/30 rounded py-2 text-sm">−</button>
+          <button onClick={toggleSign} className="bg-slate-800 rounded py-2 text-sm">+/−</button>
+
+          <button onClick={() => append('4')} className="bg-slate-700 rounded py-2 text-lg">4</button>
+          <button onClick={() => append('5')} className="bg-slate-700 rounded py-2 text-lg">5</button>
+          <button onClick={() => append('6')} className="bg-slate-700 rounded py-2 text-lg">6</button>
+          <button onClick={() => append('+')} className="bg-indigo-700/30 rounded py-2 text-sm">+</button>
+          <button onClick={() => append('.')} className="bg-slate-800 rounded py-2 text-sm">.</button>
+
+          <button onClick={() => append('1')} className="bg-slate-700 rounded py-2 text-lg">1</button>
+          <button onClick={() => append('2')} className="bg-slate-700 rounded py-2 text-lg">2</button>
+          <button onClick={() => append('3')} className="bg-slate-700 rounded py-2 text-lg">3</button>
+          <button onClick={handleEquals} className="col-span-2 bg-green-600 rounded py-2 text-lg font-semibold">=</button>
+
+          <button onClick={() => append('0')} className="col-span-5 bg-slate-700 rounded py-2 text-lg">0</button>
+        </div>
+
+        <div className="mt-3 text-center text-[10px] text-slate-400">
+          Supported: sin cos tan ln log √ x² xʸ 1/x π e, DEG/RAD
         </div>
       </div>
     </div>

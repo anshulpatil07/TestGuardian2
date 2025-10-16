@@ -22,6 +22,13 @@ enum AttemptStatus {
   auto_submitted
 }
 
+enum QuestionType {
+  mcq
+  descriptive
+  video
+  photo
+}
+
 // 1. USERS TABLE
 model User {
   id        Int      @id @default(autoincrement()) @map("user_id")
@@ -59,13 +66,15 @@ model Quiz {
   @@map("quizzes")
 }
 
-// 3. QUESTIONS TABLE (MCQ only)
+// 3. QUESTIONS TABLE (Multiple types supported)
 model Question {
-  id           Int      @id @default(autoincrement()) @map("question_id")
-  quizId       Int      @map("quiz_id")
-  questionText String   @map("question_text") @db.Text
-  points       Int      @default(1)
-  createdAt    DateTime @default(now()) @map("created_at")
+  id           Int          @id @default(autoincrement()) @map("question_id")
+  quizId       Int          @map("quiz_id")
+  questionText String       @map("question_text") @db.Text
+  questionType QuestionType @map("question_type") @default(mcq)
+  mediaUrl     String?      @map("media_url") @db.Text // For video/photo questions
+  points       Int          @default(1)
+  createdAt    DateTime     @default(now()) @map("created_at")
 
   // Relations
   quiz      Quiz       @relation(fields: [quizId], references: [id], onDelete: Cascade)
@@ -110,12 +119,14 @@ model Attempt {
   @@map("attempts")
 }
 
-// 6. RESPONSES TABLE (student's selected option)
+// 6. RESPONSES TABLE (student's answers for different question types)
 model Response {
   id               Int       @id @default(autoincrement()) @map("response_id")
   attemptId        Int       @map("attempt_id")
   questionId       Int       @map("question_id")
-  selectedOptionId Int?      @map("selected_option_id")
+  selectedOptionId Int?      @map("selected_option_id") // For MCQ questions
+  textResponse     String?   @map("text_response") @db.Text // For descriptive questions
+  mediaResponse    String?   @map("media_response") @db.Text // For video/photo responses
   answeredAt       DateTime? @default(now()) @map("answered_at")
 
   // Relations
